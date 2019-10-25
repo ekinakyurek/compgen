@@ -1,7 +1,7 @@
 # Data Generation via Generative Models
 
 ## TO-DO
-[ ] Effective Minibatch   
-[ ] Nicer interface for attention and evaluation   
-[ ] Seq-Seq Encoder and Decoder   
+- [X] Effective Minibatch   
+- [X] Nicer interface for attention and evaluation   
+- [X] Seq-Seq Encoder and Decoder   
 
