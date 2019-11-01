@@ -120,14 +120,14 @@ end
 
 Base.length(m::MorphData) = length(m.data)
 
-function randchoice(v,num,s) 
-    L = length(v)  
-    if L==0
-        Int[s,s]
-    elseif L < num
+function randchoice(v,num,L) 
+    l = length(v)  
+    if l==0
+        Int[rand(1:L),rand(1:L)]
+    elseif l < num
         rand(v,num)
     else
-        v[randperm(L)[1:num]]
+        v[randperm(l)[1:num]]
     end
 end
 
@@ -135,11 +135,12 @@ function Base.iterate(m::MorphData, s...)
     next = iterate(m.data, s...)
     next === nothing && return nothing
     (v, snext) = next
+    index = snext-1
     surface, lemma, tags = v.surface, v.lemma, v.tags
-    ex1 = [sfs for sfs in m.lemma2loc[lemma] if sfs != snext-1]
-    ex2 = [sfs for sfs in m.morph2loc[tags]  if sfs != snext-1]
-    s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num,snext-1))
-    s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num,snext-1)) 
+    ex1 = [sfs for sfs in m.lemma2loc[lemma] if sfs != index]
+    ex2 = [sfs for sfs in m.morph2loc[tags]  if sfs != index]
+    s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, length(m)))
+    s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, length(m))) 
     sc =  [s1;s2]
     length(sc) == 0 && error()
     ex =  sc[sortperm(sc,by=length,rev=true)] 
