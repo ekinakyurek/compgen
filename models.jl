@@ -250,7 +250,7 @@ function calc_mi(model,data; B=16)
         μ,logσ² = encode(model, d[1], isencatt(model) ? d[2] : nothing)
         nz,B = size(μ)
         cnt  += B
-        neg_entropy += sum(-0.5f0 * nz * log(2π) .- 0.5f0 .* sum(1 .+ logσ², dims=2))
+        neg_entropy += sum(-0.5f0 * nz * log(2π) .- 0.5f0 .* sum(1 .+ logσ², dims=1))
         push!(mu_batch_list, convert(Array, μ))
         push!(logvar_batch_list, convert(Array,logσ²))
     end
@@ -272,7 +272,7 @@ function calc_mi(model,data; B=16)
         log_density = reshape(log_density,cnt,B)
         log_qz += sum(logsumexp(log_density, dims=1) .- log(cnt))
     end
-    log_qz /= cnt
+    log_qz /= cnt2
     mi = neg_entropy - log_qz
     return mi
 end
