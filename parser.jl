@@ -1,4 +1,4 @@
-using LibGit2, Random
+using LibGit2, Random, KnetLayers
 import KnetLayers: IndexedDict, _pack_sequence, _batchSizes2indices
 
 """
@@ -136,27 +136,29 @@ function Base.iterate(m::MorphData, s...)
     next === nothing && return nothing
     (v, snext) = next
     index = snext-1
+    L = length(m)
     surface, lemma, tags = v.surface, v.lemma, v.tags
     ex1 = [sfs for sfs in m.lemma2loc[lemma] if sfs != index]
     ex2 = [sfs for sfs in m.morph2loc[tags]  if sfs != index]
-    s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, length(m)))
-    s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, length(m))) 
-    sc =  [s1;s2]
+    s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, L))
+    s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, L)) 
+    others =  map(i->m.data[i].surface, rand(1:L,4))                   
+    sc =  [s1;s2;others]
     length(sc) == 0 && error()
-    ex =  sc[sortperm(sc,by=length,rev=true)] 
-    return (surface, ex), snext
+    r = sortperm(sc,by=length,rev=true)                       
+    ex =  sc[r] 
+    return (surface, ex, sortperm(r)), snext
 end
 
-
+second(x) = x[2]
 function getbatch(iter,B)
     edata = collect(Iterators.take(iter,B))
     if (b = length(edata)) != 0
-        sfs = first.(edata)
-        exs = last.(edata)
+        sfs,exs, perms = first.(edata), second.(edata), last.(edata)
         r   = sortperm(sfs, by=length, rev=true)
         xi = _pack_sequence(sfs[r])
         xt = map(_pack_sequence,exs[r])
-        return xi, xt
+        return xi, xt, perms[r]
     else
         return nothing
     end
@@ -172,4 +174,16 @@ function pad_packed_sequence(pseq, pad::Int; toend::Bool=true)
         B  = first(bs)
         (tokens = [fill!(Array{Int,1}(undef,B),pad);pseq.tokens], batchSizes=[B;bs])
     end
+end
+                        
+function nsample_packed_sequence(pseq, pad::Int; toend::Bool=true, nsample=500)
+    inds = _batchSizes2indices(pseq.batchSizes)                                 
+    if toend
+        inds =  map(s->[pseq.tokens[s];pad], inds)
+    else
+        inds =  map(s->[pad; pseq.tokens[s]], inds)
+    end
+    inds = repeat(inds, inner=nsample)
+    x    = _pack_sequence(inds)
+    x, _batchSizes2indices(x.batchSizes)                        
 end
