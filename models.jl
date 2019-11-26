@@ -46,6 +46,17 @@ function encode(morph, xi, xt=nothing)
     end
 end
 
+function _batchSizes2ids(x)
+    inds     = _batchSizes2indices(x.batchSizes) # converts cuda x.tokens, x.batchsizes -> vector of vectors format
+    batchids = zeros(Int,length(x.tokens))
+    for i=1:length(inds)
+        batchids[inds[i]] .= i
+    end
+    return batchids
+end
+
+embedxcz(embed, x, z, dims) = vcat(embed(x.tokens),z[:, _batchSizes2ids(x)])
+
 function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
     c = morph.Wdec(z)
     h = tanh.(c)
@@ -54,7 +65,8 @@ function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
          input  = fill!(Vector{Int}(undef,B),bow)
          preds  = zeros(Int,B,maxL)
          for i=1:maxL
-            out = morph.decoder(input,h,c;batchSizes=[B], hy=true, cy=true)
+            e = vcat(morph.dec_embed(input),z)
+            out = morph.decoder(e,h,c; hy=true, cy=true)
             h,c = out.hidden, out.memory          
             input  = vec(mapslices(sampler, convert(Array,morph.output(out.y)), dims=1))
             preds[:,i] = input
@@ -62,7 +74,8 @@ function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
         return preds
     else
         x = pad_packed_sequence(xi, bow, toend=false)
-        y = morph.decoder(x.tokens, reshape(h,size(h)...,1), reshape(c,size(c)...,1) ; batchSizes=x.batchSizes).y
+        e = embedxcz(morph.dec_embed,x,z)
+        y = morph.decoder(e, reshape(h,size(h)...,1), reshape(c,size(c)...,1); batchSizes=x.batchSizes).y
         morph.output(drop(y))
     end
 end
@@ -73,7 +86,8 @@ function decodensample(morph, z, xi; bow=4, maxL=20, sampler=sample)
     c = morph.Wdec(z)
     h = tanh.(c)
     x,_ = nsample_packed_sequence(xi, bow, toend=false, nsample=nsample)
-    y = morph.decoder(x.tokens, h, c ; batchSizes=x.batchSizes).y
+    e = embedxcz(morph.dec_embed,x,z)
+    y = morph.decoder(e, h, c ; batchSizes=x.batchSizes).y
     morph.output(drop(y))
 end
 
@@ -172,10 +186,10 @@ end
 
 function loss_ae(morph, vocab, xi, x;)
     z, _ , _ =  encode(morph, xi, isencatt(morph) ? x : nothing)
-    y        = decode(morph, z, xi; bow=vocab.specialIndices.bow) 
-    yt       = pad_packed_sequence(xi, vocab.specialIndices.eow)
-    B        = size(z,2)
-    L        = nllmask(y,yt.tokens; average=false) / B
+    y        =  decode(morph, z, xi; bow=vocab.specialIndices.bow) 
+    yt       =  pad_packed_sequence(xi, vocab.specialIndices.eow)
+    B        =  size(z,2)
+    L        =  nllmask(y,yt.tokens; average=false) / B
 end
 
 function train_vae!(model, data, vocab; epoch=30, optim=Adam(), B=16, decoder=nothing, kl_weight=0.0f0, kl_rate = 0.1f0, fb_rate=8.0f0)
@@ -340,15 +354,17 @@ elementtype(model) = eltype(model.encoder.params)
 isencatt(model) = haskey(model, :Wμa) &&  haskey(model, :Wσa) 
 
 function VAE(V; H=512, E=16, Z=16)
-    encoder = LSTM(input=V,hidden=H,embed=E)
-    decoder = LSTM(input=V,hidden=H,embed=E,dropout=0.4)
-    decoder.embedding = encoder.embedding
+    encoder      = LSTM(input=V,hidden=H,embed=E)
+    dec_embed    = Embed(input=V,output=E)
+    decoder      = LSTM(input=E+Z,hidden=H,dropout=0.4)
+    copytoparams(dec_embed, encoder.embedding)
     return (encoder=encoder,
             Wμ=Multiply(input=H, output=Z), 
             Wσ=Dense(input=H, output=Z, activation=ELU()), 
             output=Multiply(input=H,output=V),
             Wdec=Multiply(input=Z, output=H),
             decoder = decoder, 
+            dec_embed = dec_embed,
             num=edata.num,
             latentSize=Z,
             hiddenSize=H)
