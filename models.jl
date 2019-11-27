@@ -11,7 +11,6 @@ function copytoparams(m1,m2)
     end
 end
 
-drop(x) = dropout(x, 0.4)
 function interact(e, h; sumout=false)
     y = e .* h
     if sumout
@@ -26,8 +25,6 @@ function attend(ea,  h, W, layer; sumout=false)
     α   = interact(ea,W(h); sumout=sumout)  
     layer(mat(sum(drop(α .* h), dims=2))), α 
 end
-
-catlast(x) = vcat(x[:,:,1],x[:,:,2])
 
 function encode(morph, xi, xt=nothing) 
     e      = morph.encoder(xi.tokens; batchSizes=xi.batchSizes, hy=true).hidden
@@ -55,17 +52,28 @@ function _batchSizes2ids(x)
     return batchids
 end
 
-embedxcz(embed, x, z, dims) = vcat(embed(x.tokens),z[:, _batchSizes2ids(x)])
+functien embedxcz(embed, x, z; concatz = false)
+    if concatz
+        vcat(embed(x.tokens),z[:, _batchSizes2ids(x)])
+    else
+        embed(x.tokens)
+    end
+end
 
 function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
     c = morph.Wdec(z)
     h = tanh.(c)
+    concatz = morh.decoder.specs.inputSize == (size(morph.dec_embed.weight,2) + size(z,1))
     if isnothing(xi) 
          B      = size(h,2)
          input  = fill!(Vector{Int}(undef,B),bow)
          preds  = zeros(Int,B,maxL)
          for i=1:maxL
-            e = vcat(morph.dec_embed(input),z)
+            if concatz
+                e = vcat(morph.dec_embed(input),z)
+            else
+                e = morph.dec_embed(input)
+            end
             out = morph.decoder(e,h,c; hy=true, cy=true)
             h,c = out.hidden, out.memory          
             input  = vec(mapslices(sampler, convert(Array,morph.output(out.y)), dims=1))
@@ -74,7 +82,7 @@ function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
         return preds
     else
         x = pad_packed_sequence(xi, bow, toend=false)
-        e = embedxcz(morph.dec_embed,x,z)
+        e = embedxcz(morph.dec_embed,x,z; concatz=concatz)
         y = morph.decoder(e, reshape(h,size(h)...,1), reshape(c,size(c)...,1); batchSizes=x.batchSizes).y
         morph.output(drop(y))
     end
@@ -86,7 +94,7 @@ function decodensample(morph, z, xi; bow=4, maxL=20, sampler=sample)
     c = morph.Wdec(z)
     h = tanh.(c)
     x,_ = nsample_packed_sequence(xi, bow, toend=false, nsample=nsample)
-    e = embedxcz(morph.dec_embed,x,z)
+    e = embedxcz(morph.dec_embed,x,z; concatz=concatz)
     y = morph.decoder(e, h, c ; batchSizes=x.batchSizes).y
     morph.output(drop(y))
 end
@@ -249,7 +257,7 @@ function calc_au(model,data; delta=0.01, B=16)
             cnt   += size(μi,2)
     end
     au_var  = Array(var/(cnt-1))
-    return sum(au_var .>= delta), au_var,   μavg
+    return sum(au_var .>= delta), au_var,  μavg
 end
 
 
@@ -338,6 +346,8 @@ function sampleinter(model, vocab, data; N=5, useprior=true)
     return samples
 end
 
+
+sample(y) = catsample(softmax(y;dims=1))
 function catsample(p)
     r = rand()
     for c = 1:length(p)
@@ -346,17 +356,18 @@ function catsample(p)
     end    
 end
 
-sample(y) = catsample(softmax(y;dims=1))
 
+catlast(x) = vcat(x[:,:,1],x[:,:,2])
 hiddensize(model)  = model.hiddenSize
 latentsize(model)  = model.latentSize
 elementtype(model) = eltype(model.encoder.params)
 isencatt(model) = haskey(model, :Wμa) &&  haskey(model, :Wσa) 
+drop(x) = dropout(x,0.4)
 
-function VAE(V; H=512, E=16, Z=16)
+function VAE(V; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
     encoder      = LSTM(input=V,hidden=H,embed=E)
     dec_embed    = Embed(input=V,output=E)
-    decoder      = LSTM(input=E+Z,hidden=H,dropout=0.4)
+    decoder      = LSTM(input=(concatz ? E+Z : E),hidden=H,dropout=pdrop)
     copytoparams(dec_embed, encoder.embedding)
     return (encoder=encoder,
             Wμ=Multiply(input=H, output=Z), 
