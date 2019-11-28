@@ -6,6 +6,7 @@ function runexperiments()
         B in (16),
         H in (512),
         epoch in (30),
+        concatz in (true),
         E in (8, 16, 32),
         Z in (8, 16, 32), 
         aepoch in (10, 20, 30),
@@ -21,7 +22,8 @@ function runexperiments()
                        fb_rate=fb_rate, 
                        kl_rate=kl_rate,
                        pdrop=pdrop, 
-                       aepoch=aepoch)
+                       aepoch=aepoch,
+                       concatz=concatz)
             try 
                 open("results.csv","a+") do f
                     println(f,"$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$(printstats(result))")
