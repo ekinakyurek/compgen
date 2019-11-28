@@ -26,11 +26,11 @@ function runexperiments()
                        concatz=concatz)
             try 
                 open("results.csv","a+") do f
-                    println(f,"$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$(printstats(result))")
+                    println(f,"$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$concatz,$(printstats(result))")
                 end
             catch
                 println("couldn't add below line to result file: ")
-                println("$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$(printstats(result))")
+                println("$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$concatz,$(printstats(result))")
             end
             gpugc()
         end
