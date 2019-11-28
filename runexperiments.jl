@@ -1,9 +1,16 @@
 include("main.jl")
 id = parse(Int,ARGS[1])
-gpu(id)
+
+function printstats(result)
+    samples_in_trn,samples_in_test,samples_in_dev = map(length,result.existsamples)
+    mi = result.mi
+    testppl = result.testppl
+    dictppl = result.dictppl
+    return "$samples_in_trn,$samples_in_test,$samples_in_dev,$mi,$testppl,$dictppl"
+end
 
 function runexperiments(id)
-    i  = 1
+    i  = 0
     for lang in ("spanish", "turkish"),
         B in (16),
         H in (512),
@@ -16,7 +23,7 @@ function runexperiments(id)
         pdrop in (0.0, 0.4),
         fb_rate in (2.0, 4.0, 8.0),
         lr in (0.001, 0.002, 0.004)
-        if i % 8 == id
+        if (i % 8)+1 == id
            result = main(VAE;lang=lang, 
                        B=B, E=E, Z=Z, H=H,
                        epoch=epoch, 
@@ -36,7 +43,9 @@ function runexperiments(id)
             end
             gpugc()
         end
+        i+=1
     end
 end
+
 
 runexperiments(id+1)

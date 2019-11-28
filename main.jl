@@ -118,7 +118,7 @@ function main(modelType=VAE;
         dictppl = calc_ppllm(model, edict, vocab; B=B)
         println("--DONE--")
     end    
-    return (model=model, existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
+    return (existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
 end
 
 
