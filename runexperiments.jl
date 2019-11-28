@@ -1,8 +1,10 @@
 include("main.jl")
-function runexperiments()
-    id = parse(Int,ARGS[1])+1
+id = parse(Int,ARGS[1])
+gpu(id)
+
+function runexperiments(id)
     i  = 1
-    for lang in ("spanish", "turkish")
+    for lang in ("spanish", "turkish"),
         B in (16),
         H in (512),
         epoch in (30),
@@ -36,3 +38,5 @@ function runexperiments()
         end
     end
 end
+
+runexperiments(id+1)
