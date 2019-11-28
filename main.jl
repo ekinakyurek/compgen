@@ -1,48 +1,125 @@
-using Plots
-import Plots: px
-
+include("util.jl")
 include("parser.jl")
 include("models.jl")
 
+# DEV SPLIT? 
+# DECIDE ON TEST SPLIT?
 function get_data(;lang="spanish")
-    th = lang[1:3]
-    data  = map(parseDataLine, eachline("./data/Sigmorphon/task1/all/$(lang)-train-high"))
-    vocab = Vocabulary(data)
+    # Parse SIGMORPHON Train Split
+    train = map(parseDataLine, eachline("./data/Sigmorphon/task1/all/$(lang)-train-high"))
+    # Get Vocabular
+    vocab = Vocabulary(train)
+    # Parse Test Split
     test  = map(parseDataLine, eachline("./data/Sigmorphon/task1/all/$(lang)-test"))
-    dictionary = [parseDataLine(line) for line in  eachline("./data/unimorph/$(th)/$(th)") if line != ""]
-    trainsfs    = unique(map(x->join(x.surface),data))
-    testsfs     = unique(map(x->join(x.surface),test))
-    dictsfs     = unique([map(x->join(x.surface),dictionary); trainsfs; testsfs])
-    unseensfs   = [x for x in dictsfs if x ∉ trainsfs]
-    return vocab, data, test, trainsfs, testsfs, unseensfs
+
+    th  = lang[1:3]
+    #Word Lookup
+    train_words  = Dict((join(x.surface),true) for x in train)
+    test_words   = Dict((join(x.surface),true) for x in test)
+    combined     = combinedicts(train_words, test_words)
+    
+    # Offline Dictionary
+    dictionary   = [parseDataLine(line) for line in  eachline("./data/unimorph/$(th)/$(th)") if line != ""]
+    dictionary   = filter(x->!haskey(combined,join(x.surface)) , dictionary)
+    unseen_words = Dict((join(x.surface),true) for x in dictionary)
+    return vocab, train, test,  dictionary, train_words, test_words, unseen_words
 end
 
-function main(lang="spanish", H=512, Z=16, E=16, B=16, concatz=true, optim=Adam(lr=0.002), epoch=40, kl_weight=0.0f0, kl_rate = 0.1f0, fb_rate=4, N=10000, useprior=true, aepoch=20, vaepoch=40, Ninter=10)
-    vocab, data, test, trainsfs, testsfs, unseensfs = get_data(lang=lang)
-    edata = encode(data,vocab)
-    tdata = encode(test,vocab)
-    morph2 = VAE(length(vocab.chars), edata.num; H=H, E=E, Z=Z, concatz=true)
-    train_ae!(morph2, data, vocab; optim=Adam(), B=B, epoch=aepoch)
-    morph3 = VAE(length(vocab.chars),  edata.num; H=H, E=E, Z=Z)
-    copytoparams(morph3.encoder, morph2.encoder)
-    copytoparams(morph3.Wμ, morph2.Wμ)
-    copytoparams(morph3.Wσ, morph2.Wσ)
-    copytoparams(morph3.dec_embed, morph3.encoder.embedding)
-    morph2=nothing
-    KnetLayers.gc()
-    train_vae!(morph3, data, vocab; B=B, optim=optim, epoch=vaepoch, kl_weight=kl_weight, kl_rate = kl_rate, fb_rate=fb_rate)
-    samples = sample(morph3, vocab, edata; N=N, useprior=true)  
-    samples = (trsamples = samples[findall([s ∈ trainsfs for s in samples])], 
-    tssamples = samples[findall([s ∈ testsfs for s in samples])],
-    ussamples = samples[findall([s ∈ unseensfs for s in samples])])
-    interex = sampleinter(morph3, vocab, data; N=Ninter)
-    au, _, _ = calc_au(morph3, tdata; delta=0.01)
-    mi       =  calc_mi(morph3,tdata)
-    testppl  = calc_ppl(morph3, tdata; nsample=500, B=16)
-    trainppl = calc_ppl(morph3, edata; nsample=500, B=16)
-    return (model=morph3, samples=samples, homot=interex, au=au,mi=mi,testppl=testppl, trainppl=trainppl)
-end
+function main(modelType=VAE;
+               lang="spanish", 
+               H=512, Z=16, E=16, B=16, 
+               concatz=true, 
+               optim=Adam(lr=0.002), 
+               kl_weight=0.0f0, 
+               kl_rate = 0.1f0, 
+               fb_rate=4, 
+               N=10000, 
+               useprior=true, 
+               aepoch=20, 
+               epoch=40, 
+               Ninter=10, 
+               pdrop=0.4, 
+               calctrainppl=false, 
+               Nsamples=500, 
+               pplnum=1000,
+               midelta=0.1)
+    gpugc()
+    println("Parsing Data")
+    vocab, train, test, dict, train_words, test_words, dict_words = get_data(lang=lang)
+    etrain, etest, edict = encode(train,vocab), encode(test,vocab), encode(dict, vocab)
+    
+    if modelType != LSTM_LM
+        println("Training Auto Encoder")
+        premodel = modelType(length(vocab.chars), etrain.num; H=H, E=E, Z=Z, concatz=true, pdrop=pdrop)
+        train_ae!(premodel, train, vocab; optim=optim, B=B, epoch=aepoch)
 
+        println("Initializing VAE and Transfering Weights")
+        model = modelType(length(vocab.chars),  etrain.num; H=H, E=E, Z=Z, pdrop=pdrop)
+        transferto!(model.encoder, premodel.encoder)
+        transferto!(model.Wμ, premodel.Wμ)
+        transferto!(model.Wσ, premodel.Wσ)
+        transferto!(model.dec_embed, model.encoder.embedding)
+        premodel=nothing; gpugc()
+
+        println("Training VAE")
+        train_vae!(model, train, vocab; B=B, optim=optim, epoch=epoch, kl_weight=kl_weight, kl_rate = kl_rate, fb_rate=fb_rate)
+           println("Generating Samples")
+        samples = sample(model, vocab, etrain; N=N, useprior=useprior)  
+    else
+        model = LSTM_LM(length(vocab.chars); H=H, E=E)
+        train_rnnlm!(model, train, vocab; epoch=epoch, optim=optim, B=B)
+           println("Generating Samples")
+        samples = samplelm(model, vocab; N=N, B=B)  
+    end
+    
+ 
+    
+  
+    existsamples =  (trnsamples = samples[findall(s->haskey(train_words,s), samples)], 
+                     tstsamples = samples[findall(s->haskey(test_words,s), samples)],
+                     dictsamples = samples[findall(s->haskey(dict_words,s), samples)])
+    
+    nonexistsamples =  samples[findall(s->(!haskey(train_words,s) && 
+                                           !haskey(test_words,s) && 
+                                           !haskey(dict_words,s)), samples)]
+    if modelType != LSTM_LM
+        println("Generating Interpolation Examples")
+        interex  = nothing #sampleinter(model, vocab, train; N=Ninter)
+
+        println("Calculating test evaluations")
+         au = nothing#au, _, _ = calc_au(model, etest; delta=midelta,B=B)
+         mi       = calc_mi(model, etest; B=B)
+    else
+        au,mi,interex = nothing, nothing, nothing
+    end
+    
+    if modelType != LSTM_LM
+        testppl  = calc_ppl(model, etest, vocab; nsample=Nsamples, B=B)
+        if calctrainppl
+            println("Calculating train ppl")
+            trainppl = calc_ppl(model, etrain, vocab; nsample=Nsamples, B=B)
+        else
+            trainppl = nothing
+        end
+        println("Calculating dict ppl")
+        edict   = encode(dict[randperm(length(dict))[1:min(pplnum,end)]],vocab)
+        dictppl = calc_ppl(model, edict, vocab; nsample=Nsamples, B=B)
+        println("--DONE--")
+    else
+        testppl = calc_ppllm(model, etest, vocab; B=B)
+        if calctrainppl
+            println("Calculating train ppl")
+            trainppl = calc_pplm(model, etrain, vocab; B=B)
+        else
+            trainppl = nothing
+        end
+        println("Calculating dict ppl")
+        edict   = encode(dict[randperm(length(dict))[1:min(pplnum,end)]],vocab)
+        dictppl = calc_ppllm(model, edict, vocab; B=B)
+        println("--DONE--")
+    end    
+    return (model=model, existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
+end
 
 
 

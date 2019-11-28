@@ -1,15 +1,4 @@
-using KnetLayers, Statistics, Distributions, Plots
-import KnetLayers: nllmask, arrtype, findindices
-import Distributions: _logpdf
-setoptim!(M, optimizer) = for p in KnetLayers.params(M); p.opt = deepcopy(optimizer); end
-KnetLayers.gc()
-gpu(0)
-
-function copytoparams(m1,m2)
-    for (w1,w2) in zip(KnetLayers.params(m1), KnetLayers.params(m2))
-        copyto!(w1.value, w2.value)
-    end
-end
+using KnetLayers, Statistics, Plots
 
 function interact(e, h; sumout=false)
     y = e .* h
@@ -31,7 +20,7 @@ function encode(morph, xi, xt=nothing)
     H,B,_  = size(e)
     if xt != nothing
         hs = (morph.encoder(ex.tokens; batchSizes=ex.batchSizes, hy=true).hidden  for ex  in xt)
-        h  = reshape(cat1d(hs...), H,4morph.num, B)
+        h  = reshape(cat1d(hs...), H,4morph.num + 1, B)
         μ, αu = attend(reshape(morph.Weaμ(e),H,1,B), h, morph.Wμa, morph.Wμ; sumout=false)
         logσ², ασ = attend(reshape(morph.Weaσ(e),H,1,B), h, morph.Wσa,  morph.Wσ; sumout=false)
         μ, logσ², (αu=αu,ασ=ασ)
@@ -43,16 +32,7 @@ function encode(morph, xi, xt=nothing)
     end
 end
 
-function _batchSizes2ids(x)
-    inds     = _batchSizes2indices(x.batchSizes) # converts cuda x.tokens, x.batchsizes -> vector of vectors format
-    batchids = zeros(Int,length(x.tokens))
-    for i=1:length(inds)
-        batchids[inds[i]] .= i
-    end
-    return batchids
-end
-
-function embedxcz(embed, x, z; concatz = false)
+function embed_x_concat_z(embed, x, z; concatz = false)
     if concatz
         vcat(embed(x.tokens),z[:, _batchSizes2ids(x)])
     else
@@ -82,8 +62,8 @@ function decode(morph, z, xi=nothing; bow=4, maxL=20, sampler=sample)
         return preds
     else
         x = pad_packed_sequence(xi, bow, toend=false)
-        e = embedxcz(morph.dec_embed,x,z; concatz=concatz)
-        y = morph.decoder(e, reshape(h,size(h)...,1), reshape(c,size(c)...,1); batchSizes=x.batchSizes).y
+        e = embed_x_concat_z(morph.dec_embed,x,z; concatz=concatz)
+        y = morph.decoder(e, h, c; batchSizes=x.batchSizes).y
         morph.output(drop(y))
     end
 end
@@ -94,7 +74,8 @@ function decodensample(morph, z, xi; bow=4, maxL=20, sampler=sample)
     c = morph.Wdec(z)
     h = tanh.(c)
     x,_ = nsample_packed_sequence(xi, bow, toend=false, nsample=nsample)
-    e = embedxcz(morph.dec_embed,x,z; concatz=concatz)
+    concatz = morph.decoder.specs.inputSize == (size(morph.dec_embed.weight,1) + size(z,1))
+    e = embed_x_concat_z(morph.dec_embed,x,z; concatz=concatz)
     y = morph.decoder(e, h, c ; batchSizes=x.batchSizes).y
     morph.output(drop(y))
 end
@@ -131,7 +112,7 @@ function iws(μ, logσ², z)
 end
 
 
-function calc_ppl(model, data; nsample=500, B=16)
+function calc_ppl(model, data, vocab; nsample=500, B=16)
     edata = Iterators.Stateful(data)
     lss, nchars, ninstances = 0.0, 0, 0
     while (d = getbatch(edata,B)) !== nothing
@@ -172,22 +153,26 @@ function attentions(model, data, vocab;  B=32)
     return attentions
 end
 
-function train_ae!(model, data, vocab; epoch=30, optim=Adam(), B=16)
+function train_ae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=16)
     setoptim!(model,optim)
     for i=1:epoch
         lss,cnt = 0.0, 0
-        edata = Iterators.Stateful(encode(shuffle(data),vocab))
-        while (d = getbatch(edata,B)) !== nothing
+        edata = Iterators.Stateful(encode(shuffle(train),vocab))
+        while (d = getbatch(edata,B)) !== nothing            
             J = @diff loss_ae(model, vocab, d[1], d[2])
             lss += value(J); cnt += 1
             for w in KnetLayers.params(J)
                 g = grad(J,w)
-                if g !== nothing
+                if !isnothing(g)
                     KnetLayers.update!(value(w), g, w.opt)
                 end
             end
+        end  
+        if !isnothing(dev)
+             
+        else
+            println((loss=lss/cnt,))
         end
-        println((loss=lss/cnt,))
     end
     return model
 end
@@ -200,12 +185,12 @@ function loss_ae(morph, vocab, xi, x;)
     L        =  nllmask(y,yt.tokens; average=false) / B
 end
 
-function train_vae!(model, data, vocab; epoch=30, optim=Adam(), B=16, decoder=nothing, kl_weight=0.0f0, kl_rate = 0.1f0, fb_rate=8.0f0)
+function train_vae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=16, kl_weight=0.0f0, kl_rate = 0.1f0, fb_rate=8.0f0)
     setoptim!(model,optim)
     dim_target_rate = isnothing(fb_rate) ?   nothing :  fb_rate / latentsize(model)
     for i=1:epoch
         lss,cnt = 0.0, 0
-        edata = Iterators.Stateful(encode(shuffle(data),vocab))
+        edata = Iterators.Stateful(encode(shuffle(train),vocab))
         while (d = getbatch(edata,B)) !== nothing
             J = @diff loss(model, vocab, d[1], d[2]; klw=kl_weight, fbr = dim_target_rate)
             lss += value(J)
@@ -215,7 +200,32 @@ function train_vae!(model, data, vocab; epoch=30, optim=Adam(), B=16, decoder=no
             end
         end
         kl_weight = Float32(min(1.0, kl_weight+kl_rate))
-        println((kl_weight=kl_weight, fbr=fb_rate, loss=lss/cnt))
+        if !isnothing(dev)
+             
+        else
+            println((kl_weight=kl_weight, fbr=fb_rate, loss=lss/cnt))
+        end
+    end
+end
+
+function train_rnnlm!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=16)
+    setoptim!(model,optim)
+    for i=1:epoch
+        lss,cnt = 0.0, 0
+        edata = Iterators.Stateful(encode(shuffle(train), vocab))
+        while (d = getbatch(edata,B)) !== nothing
+            J = @diff losslm(model, vocab, d[1])
+            lss += value(J)
+            cnt += 1
+            for w in KnetLayers.params(J)
+                KnetLayers.update!(value(w), grad(J,w), w.opt)
+            end
+        end
+        if !isnothing(dev)
+             
+        else
+            println((loss=lss/cnt,))
+        end
     end
 end
 
@@ -299,17 +309,6 @@ function calc_mi(model,data; B=16)
     return mi
 end
 
-greedy(y) = mapslices(argmax, y, dims=1)
-function trim(chars::Vector{Int},vocab)
-    out = Int[]
-    for c in chars
-        c == vocab.specialIndices.eow && break
-        if c ∉ vocab.specialIndices
-            push!(out,c)
-        end
-    end
-    return join(vocab.chars[out])
-    end
 
 function sample(model, vocab, data; N=5, useprior=true)
     μ, σ =  samplingparams(model, data; useprior=useprior)
@@ -346,29 +345,15 @@ function sampleinter(model, vocab, data; N=5, useprior=true)
     return samples
 end
 
-
-sample(y) = catsample(softmax(y;dims=1))
-function catsample(p)
-    r = rand()
-    for c = 1:length(p)
-        r -= p[c]
-        r < 0 && return c
-    end
-end
-
-
-catlast(x) = vcat(x[:,:,1],x[:,:,2])
 hiddensize(model)  = model.hiddenSize
 latentsize(model)  = model.latentSize
 elementtype(model) = eltype(model.encoder.params)
 isencatt(model) = haskey(model, :Wμa) &&  haskey(model, :Wσa)
-drop(x) = dropout(x,0.4)
-
 function VAE(V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
     encoder      = LSTM(input=V,hidden=H,embed=E)
     dec_embed    = Embed(input=V,output=E)
     decoder      = LSTM(input=(concatz ? E+Z : E),hidden=H,dropout=pdrop)
-    copytoparams(dec_embed, encoder.embedding)
+    transferto!(dec_embed, encoder.embedding)
     return (encoder=encoder,
             Wμ=Multiply(input=H, output=Z),
             Wσ=Dense(input=H, output=Z, activation=ELU()),
@@ -381,10 +366,11 @@ function VAE(V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
             hiddenSize=H)
 end
 
-function EncAttentiveVAE(V; H=512, E=16, Z=16)
-    encoder = LSTM(input=V,hidden=H,embed=E)
-    decoder = LSTM(input=V,hidden=H,embed=E,dropout=0.4)
-    decoder.embedding = encoder.embedding
+function EncAttentiveVAE(V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
+    encoder    = LSTM(input=V,hidden=H,embed=E)
+    dec_embed  = Embed(input=V,output=E)
+    decoder    = LSTM(input=(concatz ? E+Z : E),hidden=H,dropout=pdrop)
+    transferto!(dec_embed, encoder.embedding)
     return (encoder=encoder,
              Wμ=Multiply(input=H, output=Z), #MLP(H, H ÷ 2, Z, activation=ELU()),
              Wσ=Dense(input=H, output=Z, activation=ELU()), #MLP(H, H ÷ 2, Z, activation=ELU()),
@@ -395,31 +381,15 @@ function EncAttentiveVAE(V; H=512, E=16, Z=16)
              output=Linear(input=H,output=V),
              Wdec=Multiply(input=Z,output=H),
              decoder = decoder,
-             num=edata.num,
+             dec_embed = dec_embed,
+             num=num,
              latentSize=Z,
              hiddenSize=H)
 end
 
 function LSTM_LM(V; H=512, E=16)
     lstm = LSTM(input=V,hidden=H,embed=E,dropout=0.4)
-    (decoder=lstm, output=Linear(input=H,output=H), hiddenSize=H)
-end
-
-function train_rnnlm!(model, data, vocab; epoch=30, optim=Adam(), B=16)
-    setoptim!(model,optim)
-    for i=1:epoch
-        lss,cnt = 0.0, 0
-        edata = Iterators.Stateful(encode(shuffle(data),vocab))
-        while (d = getbatch(edata,B)) !== nothing
-            J = @diff losslm(model, vocab, d[1])
-            lss += value(J)
-            cnt += 1
-            for w in KnetLayers.params(J)
-                KnetLayers.update!(value(w), grad(J,w), w.opt)
-            end
-        end
-        println((loss=lss/cnt,))
-    end
+    (decoder=lstm, output=Linear(input=H,output=V), hiddenSize=H)
 end
 
 function losslm(morph, vocab, xi; average=true)
@@ -455,7 +425,7 @@ function decodelm(morph, xi=nothing; bow=4, maxL=20, batch=0, sampler=sample)
 end
 
 
-function calc_ppllm(model, data; B=16)
+function calc_ppllm(model, data, vocab; B=16)
     edata = Iterators.Stateful(data)
     lss, nchars, ninstances = 0.0, 0, 0
     while (d = getbatch(edata,B)) !== nothing
@@ -468,10 +438,10 @@ function calc_ppllm(model, data; B=16)
 end
 
 
-function sample(model, vocab; N=16)
+function samplelm(model, vocab; N=16, B=16)
     samples = []
     for i = 1 : (N ÷ 16) +1
-        y     = decodelm(model; batch=16)
+        y     = decodelm(model; batch=B)
         s     = mapslices(x->trim(x,vocab),y, dims=2)
         push!(samples,s)
     end

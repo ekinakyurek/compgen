@@ -1,5 +1,5 @@
 using LibGit2, Random, KnetLayers
-import KnetLayers: IndexedDict, _pack_sequence, _batchSizes2indices
+import KnetLayers: IndexedDict, _pack_sequence
 
 """
     const specialTokens = (unk="❓", mask="⭕️", eow="🏁", bow="🎬")
@@ -41,6 +41,7 @@ function parseDataLine(line::AbstractString)
     lemma, surface, tokens = split(line, '\t')
     (surface=collect(surface), lemma=collect(lemma), tags=split(tokens,';'))
 end
+
 dir(path...) = joinpath(pwd(),path...)
 download(dataset::Type{SIGDataSet}; path=dir("data","Sigmorphon")) = !isdir(path) ? LibGit2.clone("https://github.com/sigmorphon/conll2018", path) : true
     
@@ -56,12 +57,11 @@ end
 
 EncodedFormat(a::NamedTuple, v::Vocabulary) =
 EncodedFormat(map(x->get(v.chars, x, v.specialIndices.unk)::Int, a.surface),
-                map(x->get(v.chars, x, v.specialIndices.unk)::Int, a.lemma),
-                map(x->get(v.tags, x, v.specialIndices.unk)::Int, a.tags))
+              map(x->get(v.chars, x, v.specialIndices.unk)::Int, a.lemma),
+              map(x->get(v.tags, x, v.specialIndices.unk)::Int, a.tags))
 
 
 encode(s::NamedTuple, v::Vocabulary) = EncodedFormat(s,v)
-
 
 CrossDict = Dict{Vector{Int},Vector{Int}}
 
@@ -143,14 +143,14 @@ function Base.iterate(m::MorphData, s...)
     s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, L))
     s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, L)) 
     others =  map(i->m.data[i].surface, rand(1:L,4))                   
-    sc =  [s1;s2;others]
+    sc =  [[surface];s1;s2;others]
     length(sc) == 0 && error()
     r = sortperm(sc,by=length,rev=true)                       
     ex =  sc[r] 
     return (surface, ex, sortperm(r)), snext
 end
 
-second(x) = x[2]
+
 function getbatch(iter,B)
     edata = collect(Iterators.take(iter,B))
     if (b = length(edata)) != 0
@@ -164,26 +164,3 @@ function getbatch(iter,B)
     end
 end
 
-
-function pad_packed_sequence(pseq, pad::Int; toend::Bool=true)
-    if toend
-        bs = _batchSizes2indices(pseq.batchSizes)
-        _pack_sequence(map(s->[pseq.tokens[s];pad], bs))
-    else
-        bs = pseq.batchSizes
-        B  = first(bs)
-        (tokens = [fill!(Array{Int,1}(undef,B),pad);pseq.tokens], batchSizes=[B;bs])
-    end
-end
-                        
-function nsample_packed_sequence(pseq, pad::Int; toend::Bool=true, nsample=500)
-    inds = _batchSizes2indices(pseq.batchSizes)                                 
-    if toend
-        inds =  map(s->[pseq.tokens[s];pad], inds)
-    else
-        inds =  map(s->[pad; pseq.tokens[s]], inds)
-    end
-    inds = repeat(inds, inner=nsample)
-    x    = _pack_sequence(inds)
-    x, _batchSizes2indices(x.batchSizes)                        
-end
