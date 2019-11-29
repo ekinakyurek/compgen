@@ -11,6 +11,7 @@ end
 
 function runexperiments(id)
     i  = 0
+    experiments = []
     for lang in ("spanish", "turkish"),
         B in (16),
         H in (512),
@@ -19,29 +20,44 @@ function runexperiments(id)
         E in (8, 16, 32),
         Z in (8, 16, 32), 
         aepoch in (10, 20, 30),
-        kl_rate in (0.1, 0.05),
+        kl_rate in (0.1f0, 0.05f0),
         pdrop in (0.0, 0.4),
-        fb_rate in (2.0, 4.0, 8.0),
+        fb_rate in (2.0f0, 4.0f0, 8.0f0),
         lr in (0.001, 0.002, 0.004)
+        o = (lang=lang,B=B,H=H,E=E,Z=Z,
+             epoch=epoch,concatz=concatz,
+             aepoch=aepoch,kl_rate=kl_rate,
+             pdrop=pdrop,fb_rate=fb_rate,lr=lr) 
+        push!(experiments,o)
+    end
+
+    for (i,o) in enumerate(experiments)
         if (i % 8)+1 == id
-           result = main(VAE;lang=lang, 
-                       B=B, E=E, Z=Z, H=H,
-                       epoch=epoch, 
-                       optim=Adam(lr=lr), 
-                       fb_rate=fb_rate, 
-                       kl_rate=kl_rate,
-                       pdrop=pdrop, 
-                       aepoch=aepoch,
-                       concatz=concatz)
+            GC.gc(); gpugc()
+            println("MEM USAGE: ", KnetLayers.Knet.CuArrays.usage[])
+
+           result = main(:VAE;lang=o.lang, 
+                         B=o.B, E=o.E, Z=o.Z, H=o.H,
+                         epoch=o.epoch, 
+                         optim=Adam(lr=o.lr), 
+                         fb_rate=o.fb_rate, 
+                         kl_rate=o.kl_rate,
+                         pdrop=o.pdrop, 
+                         aepoch=o.aepoch,
+                         concatz=o.concatz)
+            
             try 
                 open("results.csv","a+") do f
-                    println(f,"$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$concatz,$(printstats(result))")
+                    println(f,"$o.B,$o.H,$o.E,$o.Z,$o.aepoch,$o.epoch,$o.kl_rate,$o.pdrop,$o.fb_rate,$o.lr,$o.concatz,$(printstats(result))")
                 end
             catch
                 println("couldn't add below line to result file: ")
-                println("$B,$H,$E,$Z,$aepoch,$epoch,$kl_rate,$pdrop,$fb_rate,$lr,$concatz,$(printstats(result))")
+                println("$o.B,$o.H,$o.E,$o.Z,$o.aepoch,$o.epoch,$o.kl_rate,$o.pdrop,$o.fb_rate,$o.lr,$o.concatz,$(printstats(result))")
             end
-            gpugc()
+            
+            result = nothing
+            GC.gc(); gpugc()
+            println("MEM USAGE: ", KnetLayers.Knet.CuArrays.usage[])
         end
         i+=1
     end

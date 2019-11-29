@@ -25,7 +25,7 @@ function get_data(;lang="spanish")
     return vocab, train, test,  dictionary, train_words, test_words, unseen_words
 end
 
-function main(modelType=VAE;
+function main(modelType=:VAE;
                lang="spanish", 
                H=512, Z=16, E=16, B=16, 
                concatz=true, 
@@ -42,38 +42,35 @@ function main(modelType=VAE;
                calctrainppl=false, 
                Nsamples=500, 
                pplnum=1000,
-               midelta=0.1)
-    gpugc()
+              midelta=0.1)
+    
     println("Parsing Data")
     vocab, train, test, dict, train_words, test_words, dict_words = get_data(lang=lang)
     etrain, etest, edict = encode(train,vocab), encode(test,vocab), encode(dict, vocab)
     
-    if modelType != LSTM_LM
+    if modelType != :LSTM_LM
         println("Training Auto Encoder")
-        premodel = modelType(length(vocab.chars), etrain.num; H=H, E=E, Z=Z, concatz=true, pdrop=pdrop)
+        premodel = VAE(length(vocab.chars), etrain.num; H=H, E=E, Z=Z, concatz=concatz, pdrop=pdrop)
         train_ae!(premodel, train, vocab; optim=optim, B=B, epoch=aepoch)
-
+        encoder, Wμ, Wσ = premodel.encoder, premodel.Wμ, premodel.Wσ
+        premodel=nothing; GC.gc(); gpugc()    
         println("Initializing VAE and Transfering Weights")
-        model = modelType(length(vocab.chars),  etrain.num; H=H, E=E, Z=Z, pdrop=pdrop)
-        transferto!(model.encoder, premodel.encoder)
-        transferto!(model.Wμ, premodel.Wμ)
-        transferto!(model.Wσ, premodel.Wσ)
-        transferto!(model.dec_embed, model.encoder.embedding)
-        premodel=nothing; gpugc()
-
+        model = VAE(length(vocab.chars),  etrain.num; H=H, E=E, Z=Z, pdrop=pdrop)
+        transferto!(model.encoder, encoder)
+        transferto!(model.Wμ, Wμ)
+        transferto!(model.Wσ, Wσ)
+        transferto!(model.dec_embed, encoder.embedding)
+        encoder, Wμ, Wσ = nothing, nothing, nothing; GC.gc(); gpugc()    
         println("Training VAE")
         train_vae!(model, train, vocab; B=B, optim=optim, epoch=epoch, kl_weight=kl_weight, kl_rate = kl_rate, fb_rate=fb_rate)
-           println("Generating Samples")
+        println("Generating Samples")
         samples = sample(model, vocab, etrain; N=N, useprior=useprior)  
     else
         model = LSTM_LM(length(vocab.chars); H=H, E=E)
         train_rnnlm!(model, train, vocab; epoch=epoch, optim=optim, B=B)
-           println("Generating Samples")
+        println("Generating Samples")
         samples = samplelm(model, vocab; N=N, B=B)  
     end
-    
- 
-    
   
     existsamples =  (trnsamples = samples[findall(s->haskey(train_words,s), samples)], 
                      tstsamples = samples[findall(s->haskey(test_words,s), samples)],
@@ -82,19 +79,18 @@ function main(modelType=VAE;
     nonexistsamples =  samples[findall(s->(!haskey(train_words,s) && 
                                            !haskey(test_words,s) && 
                                            !haskey(dict_words,s)), samples)]
-    if modelType != LSTM_LM
+    if modelType != :LSTM_LM
         println("Generating Interpolation Examples")
         interex  = nothing #sampleinter(model, vocab, train; N=Ninter)
-
         println("Calculating test evaluations")
-         au = nothing#au, _, _ = calc_au(model, etest; delta=midelta,B=B)
-         mi       = calc_mi(model, etest; B=B)
+        au = nothing#au, _, _ = calc_au(model, etest; delta=midelta,B=B)
+        mi = calc_mi(model, etest; B=B)
     else
         au,mi,interex = nothing, nothing, nothing
     end
     
-    if modelType != LSTM_LM
-        testppl  = calc_ppl(model, etest, vocab; nsample=Nsamples, B=B)
+    if modelType != :LSTM_LM
+        testppl = calc_ppl(model, etest, vocab; nsample=Nsamples, B=B)
         if calctrainppl
             println("Calculating train ppl")
             trainppl = calc_ppl(model, etrain, vocab; nsample=Nsamples, B=B)
@@ -117,7 +113,8 @@ function main(modelType=VAE;
         edict   = encode(dict[randperm(length(dict))[1:min(pplnum,end)]],vocab)
         dictppl = calc_ppllm(model, edict, vocab; B=B)
         println("--DONE--")
-    end    
+    end
+    model = nothing;  GC.gc(); gpugc()
     return (existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
 end
 
