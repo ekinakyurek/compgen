@@ -231,10 +231,11 @@ end
 
 function samplingparams(model, data; useprior=false, B=16)
     H,T   = latentsize(model), elementtype(model)
+    μ, σ² = fill!(arrtype(undef,H,1),0), fill!(arrtype(undef,H,1),1)
     if useprior
-        arrtype(zeros(T,H,1)), arrtype(ones(T,H,1))
+        μ, σ²
     else
-        μ, σ² = arrtype(zeros(T,H,1)), arrtype(zeros(T,H,1))
+        fill!(σ²,0)
         cnt = 0
         edata = Iterators.Stateful(data)
         while ((d = getbatch(edata,B)) !== nothing)
@@ -243,14 +244,14 @@ function samplingparams(model, data; useprior=false, B=16)
             σ² .+= sum(exp.(logσ²),dims=2)
             cnt += size(μi,2)
         end
-        μ/cnt, sqrt.(σ²/cnt)
+        μ/cnt, sqrt.(σ²/(cnt-1))
     end
 end
 
 function calc_au(model,data; delta=0.01, B=16)
-    H,T   = latentsize(model), elementtype(model)
-    μ     = arrtype(zeros(T,H,1))
-    cnt = 0
+    H, T = latentsize(model), elementtype(model)
+    μ    = fill!(arrtype(undef, H,1),0)
+    cnt  = 0
     edata = Iterators.Stateful(data)
     while ((d = getbatch(edata,B)) !== nothing)
             μi,_ = encode(model, d[1], isencatt(model) ? d[2] : nothing)
@@ -259,14 +260,14 @@ function calc_au(model,data; delta=0.01, B=16)
     end
     μavg =  μ/cnt
     cnt=0
-    var     = arrtype(zeros(T,H,1))
+    var = fill!(arrtype(undef, H,1),0)
     edata = Iterators.Stateful(data)
     while ((d = getbatch(edata,B)) !== nothing)
-            μi, _= encode(model, d[1], isencatt(model) ? d[2] : nothing)
-            var  .+= sum((μi .-  μavg).^2, dims=2)
-            cnt   += size(μi,2)
+        μi, _= encode(model, d[1], isencatt(model) ? d[2] : nothing)
+        var  .+= sum((μi .-  μavg).^2, dims=2)
+        cnt   += size(μi,2)
     end
-    au_var  = Array(var/(cnt-1))
+    au_var  = convert(Array, var/(cnt-1))
     return sum(au_var .>= delta), au_var,  μavg
 end
 
@@ -282,16 +283,16 @@ function calc_mi(model,data; B=16)
         μ,logσ² = encode(model, d[1], isencatt(model) ? d[2] : nothing)
         nz,B = size(μ)
         cnt  += B
-        neg_entropy += sum(-0.5f0 * nz * log(2π) .- 0.5f0 .* sum(1 .+ logσ², dims=1))
+        neg_entropy += sum(-0.5f0 * nz * log(2π) .- 0.5f0 .* sum(10f0 .+ logσ², dims=1))
         push!(mu_batch_list, convert(Array, μ))
         push!(logvar_batch_list, convert(Array,logσ²))
     end
     neg_entropy = neg_entropy / cnt
     log_qz = 0.0
     mu      =  arrtype(reshape(hcat((mu_batch_list[i] for i in  1:length(mu_batch_list) )...),nz,cnt,1))
-    logvar  =  arrtype(reshape(hcat((logvar_batch_list[i] for i in 1:length(mu_batch_list))...),nz,cnt,1))
+    logvar  =  arrtype(reshape(hcat((logvar_batch_list[i] for i in 1:length(logvar_batch_list))...),nz,cnt,1))
     var     =  exp.(logvar)
-    cnt2 = 0
+    cnt2    = 0
     for i=1:length(mu_batch_list)
         μ = arrtype(mu_batch_list[i])
         nz,B = size(μ)
@@ -347,7 +348,7 @@ end
 
 hiddensize(model)  = model.hiddenSize
 latentsize(model)  = model.latentSize
-elementtype(model) = eltype(model.encoder.params)
+elementtype(model) = eltype(value(first(params(model))))
 isencatt(model) = haskey(model, :Wμa) &&  haskey(model, :Wσa)
 function VAE(V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
     encoder      = LSTM(input=V,hidden=H,embed=E)

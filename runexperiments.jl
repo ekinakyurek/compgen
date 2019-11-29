@@ -1,4 +1,5 @@
 include("main.jl")
+
 id = parse(Int,ARGS[1])
 
 function printstats(result)
@@ -15,11 +16,11 @@ function runexperiments(id)
     for lang in ("spanish", "turkish"),
         B in (16),
         H in (512),
-        epoch in (30),
+        epoch in (1),
         concatz in (true),
         E in (8, 16, 32),
         Z in (8, 16, 32), 
-        aepoch in (10, 20, 30),
+        aepoch in (1), #(10, 20, 30),
         kl_rate in (0.1f0, 0.05f0),
         pdrop in (0.0, 0.4),
         fb_rate in (2.0f0, 4.0f0, 8.0f0),
@@ -32,10 +33,8 @@ function runexperiments(id)
     end
 
     for (i,o) in enumerate(experiments)
+        GC.gc(); gpugc()
         if (i % 8)+1 == id
-            GC.gc(); gpugc()
-            println("MEM USAGE: ", KnetLayers.Knet.CuArrays.usage[])
-
            result = main(:VAE;lang=o.lang, 
                          B=o.B, E=o.E, Z=o.Z, H=o.H,
                          epoch=o.epoch, 
@@ -55,9 +54,6 @@ function runexperiments(id)
                 println("$o.B,$o.H,$o.E,$o.Z,$o.aepoch,$o.epoch,$o.kl_rate,$o.pdrop,$o.fb_rate,$o.lr,$o.concatz,$(printstats(result))")
             end
             
-            result = nothing
-            GC.gc(); gpugc()
-            println("MEM USAGE: ", KnetLayers.Knet.CuArrays.usage[])
         end
         i+=1
     end
