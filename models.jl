@@ -283,7 +283,7 @@ function calc_mi(model,data; B=16)
         μ,logσ² = encode(model, d[1], isencatt(model) ? d[2] : nothing)
         nz,B = size(μ)
         cnt  += B
-        neg_entropy += sum(-0.5f0 * nz * log(2π) .- 0.5f0 .* sum(10f0 .+ logσ², dims=1))
+        neg_entropy += sum(-0.5f0 * nz * Float32(log(2π)) .- 0.5f0 .* sum(1f0 .+ logσ², dims=1))
         push!(mu_batch_list, convert(Array, μ))
         push!(logvar_batch_list, convert(Array,logσ²))
     end
