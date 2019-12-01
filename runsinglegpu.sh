@@ -1,13 +1,13 @@
 #!/bin/bash
 # A shell script to print each number five times.
 GPUID="$1"
-_B=512
+_B=16
 _H=512
 _EPOCH=30
 _CONCATZ=true
-_AEPOCH=20
+_AEPOCH=15
 cnt=0
-for lang in spanish, turkish
+for lang in spanish turkish
 do
     for E in 8 16 32
     do
@@ -23,15 +23,11 @@ do
 			do
 			    if (( ($cnt % 8) == $GPUID ))
 			    then
-				CUDA_VISIBLE_DEVICES=$GPUID julia runexperiments.jl $GPUID --lang $lang --B $B\
-						    --H $H --E $E --Z $Z --kl_rate $kl_rate --fb_rate $fb_rate\
+				CUDA_VISIBLE_DEVICES=$GPUID julia runexperiments.jl $GPUID --lang $lang --B $_B\
+						    --H $_H --E $E --Z $Z --kl_rate $kl_rate --fb_rate $fb_rate\
 						    --lr $lr --epoch $_EPOCH --concatz $_CONCATZ --aepoch $_AEPOCH
 			    fi
 			    let "cnt+=1"
-			    if (( $cnt == 1))
-			    then
-				break
-			    fi
 			done
 		    done
 		done

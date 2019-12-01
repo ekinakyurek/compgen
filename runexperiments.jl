@@ -22,10 +22,14 @@ function parse_commandline()
         help = "turkish|spanish"
         arg_type = String
         default = "turkish"
-        "--Z", "--E"
+        "--Z"
         help = "Z is latent dimension, E is embedding dimension"
         arg_type = Int
-        default = 8    
+        default = 8
+        "--E"
+        help = "E is latent dimension, E is embedding dimension"
+        arg_type = Int
+        default = 8            
         "--H"
         help = "H is hidden dimension of the LSTMs"
         arg_type = Int
@@ -34,6 +38,14 @@ function parse_commandline()
         help = "B is batchsize"
         arg_type = Int
         default = 16
+        "--epoch"
+        help = "number of epochs for training"
+        arg_type = Int
+        default = 30
+        "--aepoch"
+        help = "number of epoch for autoencoder training"
+        arg_type = Int
+        default = 20
         "--kl_rate"
         help = "increase steps kl weight"
         arg_type = Float64
@@ -46,15 +58,28 @@ function parse_commandline()
         help = "Learning Rate"
         arg_type = Float64
         default = 0.002
+        "--concatz"
+        help = "whether to concatanate z in the decoder"
+        arg_type = Bool
+        default = true
+        "--pdrop"
+        help = "dropout rate used in decoder and before output"
+        arg_type = Float64
+        default = 0.4
+        
     end
-    parse_args(s)
+    config = parse_args(s)
+    for (arg,val) in config
+        println("  $arg  =>  $val")
+    end
+    return config
 end
 
 const config_keys = ("lang","B","H","E","Z","aepoch","epoch","lr","kl_rate","fb_rate","pdrop","concatz")
 function printconfig(o)
     str = ""
     for k in config_keys
-        str *= o[k]
+        str *= string(o[k])
         str *= ','
     end
     str
