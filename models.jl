@@ -1,4 +1,5 @@
 using KnetLayers, Statistics, Plots
+import Knet: sumabs2, norm
 
 function interact(e, h; sumout=false)
     y = e .* h
@@ -158,7 +159,7 @@ function train_ae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=1
     for i=1:epoch
         lss,cnt = 0.0, 0
         edata = Iterators.Stateful(encode(shuffle(train),vocab))
-        while (d = getbatch(edata,B)) !== nothing            
+        while (d = getbatch(edata,B)) !== nothing
             J = @diff loss_ae(model, vocab, d[1], d[2])
             lss += value(J); cnt += 1
             for w in KnetLayers.params(J)
@@ -167,9 +168,9 @@ function train_ae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=1
                     KnetLayers.update!(value(w), g, w.opt)
                 end
             end
-        end  
+        end
         if !isnothing(dev)
-             
+
         else
             println((loss=lss/cnt,))
         end
@@ -201,7 +202,7 @@ function train_vae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=
         end
         kl_weight = Float32(min(1.0, kl_weight+kl_rate))
         if !isnothing(dev)
-             
+
         else
             println((kl_weight=kl_weight, fbr=fb_rate, loss=lss/cnt))
         end
@@ -222,7 +223,7 @@ function train_rnnlm!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), 
             end
         end
         if !isnothing(dev)
-             
+
         else
             println((loss=lss/cnt,))
         end
@@ -399,6 +400,7 @@ function losslm(morph, vocab, xi; average=true)
     nllmask(y,yt.tokens; average=average)
 end
 
+# FIXME: Do Multi Layer LM
 function decodelm(morph, xi=nothing; bow=4, maxL=20, batch=0, sampler=sample)
     H = hiddensize(morph)
     T = eltype(morph)
@@ -448,3 +450,79 @@ function samplelm(model, vocab; N=16, B=16)
     end
     cat1d(samples...)
 end
+
+struct Pw{T<:AbstractFloat}
+    p::T
+    K::T
+    a::T
+    b::T
+    d::T
+    beta
+end
+
+function Pw{T}(p,K) where T
+    dim = p-1
+    a = (dim + 2K + sqrt(4K^2 + dim^2))/4
+    b = (-2K  + sqrt(4K^2 + dim^2))/dim
+    d = 4a*b/(1+b) - dim*log(dim)
+    beta = Beta(dim/2, dim/2)
+    return Pw(T(p),T(K),T(a),T(b),T(d),beta)
+end
+
+function sample(pw::Pw{T}) where T
+    opb = (1+pw.b)
+    omb = (1-pw.b)
+    while true
+        β  = rand(pw.beta)
+        xp = (1-opb*β)
+        xn = (1-omb*β)
+        t  = 2*pw.a*pw.b / xn
+        if (pw.p-1)*log(t) - t + pw.d - log(rand()) >= 0
+            return T(xp / xn)
+        end
+    end
+end
+
+
+
+function sample_orthonormal_to(μ, p)
+    v      = randn!(similar(μ))
+    r      = sum(μ .* v,dims=1)
+    ortho  = v .-  μ .* r
+    ortho ./ sqrt.(sumabs2(ortho, dims=1))
+end
+
+add_norm_noise(μnorm, ϵ, max_norm=7.5f0) =
+     min.(μnorm, max_norm-ϵ) .+ rand!(similar(μnorm)) .* ϵ
+
+
+function sample_vMF(μ, ϵ, max_norm, pw=Pw{eltype(μ)}(size(μ,1),10))
+    μ = μ .+ Float32(1e-10)
+    w = [sample(pw) for i=1:size(μ,2)]'
+    μnorm    = sqrt.(sumabs2(μ,dims=1))
+    μnoise   = add_norm_noise(μnorm, ϵ, max_norm)
+    v = sample_orthonormal_to(μ ./ μnorm, pw.p)
+    scale    = sqrt.(1 .- w.^2)
+    μscale = μ .* w ./ μnorm
+    (v .* scale  + μscale) .* μnoise
+end
+
+
+function encode(model, x, xp, ID, pw::Pw; max_norm=7.5f0, ϵ=0.1f0)
+    μ = vcat(model.enclinear(sum(model.embed(ID.I) .* arrtype(ID.Imask),dims=2)),
+             model.enclinear(sum(model.embed(ID.D) .* arrtype(ID.Dmask),dims=2)))
+    z = sample_vMF(μ, ϵ, max_norm, pw)
+end
+
+
+function decode(model, x, xp, z; max_norm=7.5f0, ϵ=0.1f0)
+    # TODO:
+    #bi directional encoder for xp with zero padding: look at macnet
+    #encoder with attention # look at macnet
+    #look at how to use z in attention or encoder or decoder ?
+end
+# TODO:
+# calculate KL in prototype model
+# write loss function for prototype model
+# write sampling function for prototype model
+# transfer character embeddings from intialization

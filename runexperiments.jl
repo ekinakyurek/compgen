@@ -3,11 +3,12 @@ using ArgParse
 id = parse(Int,ARGS[1])
 
 function printstats(result)
-    samples_in_trn,samples_in_test,samples_in_dev = map(length,result.existsamples)
+    existsamples       = map(length,result.existsamples)
+    unique_existsamples = map(s->length(unique(s)),result.existsamples)
     mi = result.mi
     testppl = result.testppl
     dictppl = result.dictppl
-    return "$samples_in_trn,$samples_in_test,$samples_in_dev,$mi,$testppl,$dictppl"
+    return "$existsamples,$unique_existsamples,$mi,$testppl,$dictppl"
 end
 
 
@@ -29,7 +30,7 @@ function parse_commandline()
         "--E"
         help = "E is latent dimension, E is embedding dimension"
         arg_type = Int
-        default = 8            
+        default = 8
         "--H"
         help = "H is hidden dimension of the LSTMs"
         arg_type = Int
@@ -50,7 +51,7 @@ function parse_commandline()
         help = "increase steps kl weight"
         arg_type = Float64
         default = 0.1
-        "--fb_rate"    
+        "--fb_rate"
         help = "Free Bits rate"
         arg_type = Float64
         default = 4.0
@@ -66,7 +67,19 @@ function parse_commandline()
         help = "dropout rate used in decoder and before output"
         arg_type = Float64
         default = 0.4
-        
+        "--authresh"
+        help = "active unit threshold"
+        arg_type = Float64
+        default = 0.1
+        "--N"
+        help = "Number of samples to product"
+        arg_type = Int
+        default = 10000
+        "--Nsample"
+        help = "Number of samples to calculate PPL estimate"
+        arg_type = Int
+        default = 500
+
     end
     config = parse_args(s)
     for (arg,val) in config
@@ -95,9 +108,12 @@ function runsinglegpu()
                   kl_rate=o["kl_rate"] |> Float32,
                   pdrop=o["pdrop"],
              	  aepoch=o["aepoch"],
-                  concatz=o["concatz"])
+                  concatz=o["concatz"],
+                  authresh=o["authresh"],
+                  N=o["N"],
+                  Nsamples=o["Nsamples"])
 
-    try 
+    try
         open("results.csv","a+") do f
             println(f,"$(printconfig(o))$(printstats(result))")
         end
@@ -118,7 +134,7 @@ runsinglegpu()
 #         epoch in (1),
 #         concatz in (true),
 #         E in (8, 16, 32),
-#         Z in (8, 16, 32), 
+#         Z in (8, 16, 32),
 #         aepoch in (1), #(10, 20, 30),
 #         kl_rate in (0.1f0, 0.05f0),
 #         pdrop in (0.0, 0.4),
@@ -127,24 +143,24 @@ runsinglegpu()
 #         o = (lang=lang,B=B,H=H,E=E,Z=Z,
 #              epoch=epoch,concatz=concatz,
 #              aepoch=aepoch,kl_rate=kl_rate,
-#              pdrop=pdrop,fb_rate=fb_rate,lr=lr) 
+#              pdrop=pdrop,fb_rate=fb_rate,lr=lr)
 #         push!(experiments,o)
 #     end
 
 #     for (i,o) in enumerate(experiments)
 #         GC.gc(); gpugc()
 #         if (i % 8)+1 == id
-#            result = main(:VAE;lang=o.lang, 
+#            result = main(:VAE;lang=o.lang,
 #                          B=o.B, E=o.E, Z=o.Z, H=o.H,
-#                          epoch=o.epoch, 
-#                          optim=Adam(lr=o.lr), 
-#                          fb_rate=o.fb_rate, 
+#                          epoch=o.epoch,
+#                          optim=Adam(lr=o.lr),
+#                          fb_rate=o.fb_rate,
 #                          kl_rate=o.kl_rate,
-#                          pdrop=o.pdrop, 
+#                          pdrop=o.pdrop,
 #                          aepoch=o.aepoch,
 #                          concatz=o.concatz)
-            
-#             try 
+
+#             try
 #                 open("results.csv","a+") do f
 #                     println(f,"$o.B,$o.H,$o.E,$o.Z,$o.aepoch,$o.epoch,$o.kl_rate,$o.pdrop,$o.fb_rate,$o.lr,$o.concatz,$(printstats(result))")
 #                 end
@@ -152,7 +168,7 @@ runsinglegpu()
 #                 println("couldn't add below line to result file: ")
 #                 println("$o.B,$o.H,$o.E,$o.Z,$o.aepoch,$o.epoch,$o.kl_rate,$o.pdrop,$o.fb_rate,$o.lr,$o.concatz,$(printstats(result))")
 #             end
-            
+
 #         end
 #         i+=1
 #     end
