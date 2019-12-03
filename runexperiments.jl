@@ -3,12 +3,12 @@ using ArgParse
 id = parse(Int,ARGS[1])
 
 function printstats(result)
-    existsamples       = map(length,result.existsamples)
+    existsamples        = map(length,result.existsamples)
     unique_existsamples = map(s->length(unique(s)),result.existsamples)
     mi = result.mi
     testppl = result.testppl
     dictppl = result.dictppl
-    return "$existsamples,$unique_existsamples,$mi,$testppl,$dictppl"
+    return "$existsamples;$unique_existsamples;$mi;$testppl;$dictppl"
 end
 
 
@@ -75,7 +75,7 @@ function parse_commandline()
         help = "Number of samples to product"
         arg_type = Int
         default = 10000
-        "--Nsample"
+        "--Nsamples"
         help = "Number of samples to calculate PPL estimate"
         arg_type = Int
         default = 500
@@ -93,7 +93,7 @@ function printconfig(o)
     str = ""
     for k in config_keys
         str *= string(o[k])
-        str *= ','
+        str *= ';'
     end
     str
 end
