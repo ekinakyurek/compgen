@@ -346,7 +346,7 @@ function sampleinter(model, vocab, data; N=5, useprior=true)
     push!(samples,se)
     return samples
 end
-
+numlayers(model)   = Int(model.decoder.specs.numLayers)
 hiddensize(model)  = model.hiddenSize
 latentsize(model)  = model.latentSize
 elementtype(model) = eltype(value(first(params(model))))
@@ -389,8 +389,8 @@ function EncAttentiveVAE(V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
              hiddenSize=H)
 end
 
-function LSTM_LM(V; H=512, E=16)
-    lstm = LSTM(input=V,hidden=H,embed=E,dropout=0.4)
+function LSTM_LM(V; H=512, E=16, L=1)
+    lstm = LSTM(input=V,hidden=H,embed=E,dropout=0.4,numLayers=L)
     (decoder=lstm, output=Linear(input=H,output=V), hiddenSize=H)
 end
 
@@ -406,7 +406,7 @@ function decodelm(morph, xi=nothing; bow=4, maxL=20, batch=0, sampler=sample)
     T = eltype(morph)
     if isnothing(xi)
          B = batch
-         h = fill!(arrtype(undef, H, B),0)
+         h = fill!(arrtype(undef, H, B, numlayers(morph)),0)
          c = fill!(similar(h),0)
          input  = fill!(Vector{Int}(undef,B),bow)
          preds  = zeros(Int, B, maxL)
@@ -419,7 +419,7 @@ function decodelm(morph, xi=nothing; bow=4, maxL=20, batch=0, sampler=sample)
         return preds
     else
         B = xi.batchSizes[1]
-        h = fill!(arrtype(undef, H, B),0)
+        h = fill!(arrtype(undef, H, B, numlayers(morph)),0)
         c = fill!(similar(h),0)
         x = pad_packed_sequence(xi, bow, toend=false)
         y = morph.decoder(x.tokens, h, c; batchSizes=x.batchSizes).y

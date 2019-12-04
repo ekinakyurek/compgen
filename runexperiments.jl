@@ -5,7 +5,7 @@ id = parse(Int,ARGS[1])
 function printstats(result)
     existsamples        = map(length,result.existsamples)
     unique_existsamples = map(s->length(unique(s)),result.existsamples)
-    mi = result.mi
+    mi = isnothing(result.mi) ? NaN : result.mi
     testppl = result.testppl
     dictppl = result.dictppl
     return "$existsamples;$unique_existsamples;$mi;$testppl;$dictppl"
@@ -79,7 +79,14 @@ function parse_commandline()
         help = "Number of samples to calculate PPL estimate"
         arg_type = Int
         default = 500
-
+        "--model"
+        help = "VAE | LSTMLM | PROTOTYPE"
+        arg_type = String
+        default = "VAE"
+        "--Nlayers"
+        help = "Number of layers in LSTM decoder"
+        arg_type = Int
+        default = 1
     end
     config = parse_args(s)
     for (arg,val) in config
@@ -88,7 +95,7 @@ function parse_commandline()
     return config
 end
 
-const config_keys = ("lang","B","H","E","Z","aepoch","epoch","lr","kl_rate","fb_rate","pdrop","concatz")
+const config_keys = ("model","lang","B","H","E","Z","aepoch","epoch","lr","kl_rate","fb_rate","pdrop","concatz")
 function printconfig(o)
     str = ""
     for k in config_keys
@@ -100,7 +107,7 @@ end
 
 function runsinglegpu()
     o = parse_commandline()
-    result = main(:VAE;lang=o["lang"],
+    result = main(Symbol(o["model"]); lang=o["lang"],
                   B=o["B"], E=o["E"], Z=o["Z"], H=o["H"],
                   epoch=o["epoch"],
                   optim=Adam(lr=o["lr"]),
@@ -111,7 +118,8 @@ function runsinglegpu()
                   concatz=o["concatz"],
                   authresh=o["authresh"],
                   N=o["N"],
-                  Nsamples=o["Nsamples"])
+                  Nsamples=o["Nsamples"],
+                  Nlayers=o["Nlayers"])
 
     try
         open("results.csv","a+") do f

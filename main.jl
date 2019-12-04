@@ -51,6 +51,29 @@ function get_prototype_data(;lang="spanish", thresh=0.6, maxcnt=10, testl=1000)
                         thresh=thresh, maxcnt=maxcnt, lang=lang)
 end
 
+function printlatent(fname, model, data, vocab; B=16)
+    edata = Iterators.Stateful(data)
+    while ((d = getbatch(edata,B)) !== nothing)
+        μ, logσ² = encode(model, d[1], isencatt(model) ? d[2] : nothing)
+        inds  = _batchSizes2indices(d[1].batchSizes)
+        words = map(ind->d[1].tokens[ind], inds)
+        open(fname,"a+") do f
+            for (i,w) in enumerate(words)
+                word   = join(vocab.chars[w])
+                latent =  μ[:,i]
+                println(f,word,'\t',Array(latent))
+            end
+        end
+    end
+end
+
+function printsamples(fname,words)
+    open(fname,"a+") do f
+        for w in words
+            println(f,w)
+        end
+    end
+end
 
 # Add parameter for decoder layers
 # Test and Optimize RNNLM
@@ -72,7 +95,8 @@ function main(modelType=:VAE;
                calctrainppl=false,
                Nsamples=500,
                pplnum=1000,
-               authresh=0.1)
+               authresh=0.1,
+               Nlayers=1)
 
     println("Parsing Data")
     vocab, train, test, dict, train_words, test_words, dict_words = get_data(lang=lang)
@@ -96,7 +120,7 @@ function main(modelType=:VAE;
         println("Generating Samples")
         samples = sample(model, vocab, etrain; N=N, useprior=useprior)
     else
-        model = LSTM_LM(length(vocab.chars); H=H, E=E)
+        model = LSTM_LM(length(vocab.chars); H=H, E=E, L=Nlayers)
         train_rnnlm!(model, train, vocab; epoch=epoch, optim=optim, B=B)
         println("Generating Samples")
         samples = samplelm(model, vocab; N=N, B=B)
@@ -144,5 +168,8 @@ function main(modelType=:VAE;
         dictppl = calc_ppllm(model, edict, vocab; B=B)
         println("--DONE--")
     end
+
+   # printsamples("samples.txt", samples)
+   # printlatent("latent.txt", model, etrain, vocab; B=B)
     return (existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
 end
