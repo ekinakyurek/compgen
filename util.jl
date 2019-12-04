@@ -61,9 +61,9 @@ function pad_packed_sequence(pseq, pad::Int; toend::Bool=true)
         (tokens = [fill!(Array{Int,1}(undef,B),pad);pseq.tokens], batchSizes=[B;bs])
     end
 end
-                        
+
 function nsample_packed_sequence(pseq, pad::Int; toend::Bool=true, nsample=500)
-    inds = _batchSizes2indices(pseq.batchSizes)                                 
+    inds = _batchSizes2indices(pseq.batchSizes)
     if toend
         inds =  map(s->[pseq.tokens[s];pad], inds)
     else
@@ -71,7 +71,7 @@ function nsample_packed_sequence(pseq, pad::Int; toend::Bool=true, nsample=500)
     end
     inds = repeat(inds, inner=nsample)
     x    = _pack_sequence(inds)
-    x, _batchSizes2indices(x.batchSizes)                        
+    x, _batchSizes2indices(x.batchSizes)
 end
 
 second(x) = x[2]
@@ -105,4 +105,22 @@ function prettymemory(b)
         str = "-"
     end
     return lpad(str, 7, " ")
+end
+
+unzip(a) = map(x->getfield.(a, x), fieldnames(eltype(a)))
+
+
+function get_mask_sequence(lengths::Vector{Int}; makefalse=true)
+    Tmax = first(lengths)
+    Tmax == last(lengths) && return nothing
+    B    = length(lengths)
+    if makefalse
+        mask = falses(length(lengths), Tmax)
+    else
+        mask = trues(length(lengths), Tmax)
+    end
+    for k=1:B
+        @inbounds mask[k,lengths[k]+1:Tmax] .= (true & makefalse)
+    end
+    return mask
 end

@@ -508,15 +508,19 @@ function sample_vMF(μ, ϵ, max_norm, pw=Pw{eltype(μ)}(size(μ,1),10))
 end
 
 
-function encode(model, x, xp, ID, pw::Pw; max_norm=7.5f0, ϵ=0.1f0)
+function encode(model, ID, pw::Pw; max_norm=7.5f0, ϵ=0.1f0)
     μ = vcat(model.enclinear(sum(model.embed(ID.I) .* arrtype(ID.Imask),dims=2)),
              model.enclinear(sum(model.embed(ID.D) .* arrtype(ID.Dmask),dims=2)))
     z = sample_vMF(μ, ϵ, max_norm, pw)
 end
 
 
-function decode(model, x, xp, z; max_norm=7.5f0, ϵ=0.1f0)
+function decode(model, x, xp, xp_mask, z; max_norm=7.5f0, ϵ=0.1f0)
     # TODO:
+    pout = model.prototype_decoder(xp.tokens; batchSizes=xp.batchSizes).y
+    cws = PadRNNOutput(pout.y,_batchSizes2indices(xp.batchSizes))
+    
+
     #bi directional encoder for xp with zero padding: look at macnet
     #encoder with attention # look at macnet
     #look at how to use z in attention or encoder or decoder ?

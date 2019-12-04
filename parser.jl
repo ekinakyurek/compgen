@@ -227,12 +227,89 @@ function get_neighbours_dict(words, devs...; thresh=0.6, maxcnt=10, lang="unknow
     end
 end
 
-function parse_prototype_file(tsvfile)
-    # read tsv
-    # create char vocab
-    # split x,xp,I,D
-    # return array
+
+function encode_proto(data, vocab)
+    map(data) do l
+        map(l) do x
+            vocab.chars[x]
+        end
+    end
 end
+
+struct VocabularyProto
+    chars::IndexedDict{Char}
+    specialTokens::NamedTuple
+    specialIndices::NamedTuple
+end
+
+
+function parse_prototype_file(tsvfile)
+    data = map(l->collect.(split(l, '\t')), eachline(tsvfile))
+    vocab = Dict{Char,Int}()
+    for t in specialTokens; get!(vocab, first(t),length(vocab)+1); end
+    specialIndices = (unk=1, mask=2, eow=3, bow=4)
+    for l in data
+        for c in first(l)
+            get!(vocab,c,length(vocab)+1)
+        end
+    end
+    vocab = VocabularyProto(IndexedDict(vocab),specialTokens,specialIndices)
+    encode_proto(data,vocab), vocab
+end
+
+
+function getbatch_proto(iter, vocab, B)
+    edata = collect(Iterators.take(iter,B))
+    if (b = length(edata)) != 0
+        x, xp, I, D = unzip(edata)
+        r   = sortperm(xp, by=length, rev=true)
+        x = x[r]; xp=xp[r] I=I[r]; D=D[r]
+        xp_packed = _pack_sequence(xp)
+        xp_mask   = get_mask_sequence(length.(xp); makefalse=true)
+        xmasked   = PadSequenceArray(map(xi->[vocab.specialIndices.bow; xi], x);
+                                    pad=vocab.specialIndices.mask))
+        ygold     = PadSequenceArray(map(xi->[xi;vocab.specialIndices.eow], x);
+                                    pad=0)
+        Imask     = get_mask_sequence(length.(I); makefalse=false) * 1.0f0
+        Dmask     = get_mask_sequence(length.(D); makefalse=false) * 1.0f0
+        return xmasked, ygold, xp_packed, xp_mask, (I=I, D=D, Imask=Imask, Dmask=Dmask)
+    else
+        return nothing
+    end
+end
+
+
+
+
+# read tsv
+# create char vocab
+# split x,xp,I,D
+# return array
+
+
+
+# Base.length(m::PrototypeData) = length(m.data)
+
+# function Base.iterate(m::MorphData, s...)
+#     next = iterate(m.data, s...)
+#     next === nothing && return nothing
+#     (v, snext) = next
+#     index = snext-1
+#     L = length(m)
+#     surface, lemma, tags = v.surface, v.lemma, v.tags
+#     ex1 = [sfs for sfs in m.lemma2loc[lemma] if sfs != index]
+#     ex2 = [sfs for sfs in m.morph2loc[tags]  if sfs != index]
+#     s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, L))
+#     s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, L))
+#     others =  map(i->m.data[i].surface, rand(1:L,4))
+#     sc =  [[surface];s1;s2;others]
+#     length(sc) == 0 && error()
+#     r = sortperm(sc,by=length,rev=true)
+#     ex =  sc[r]
+#     return (surface, ex, sortperm(r)), snext
+# end
+
+
 
 # Create Struct for prototype data array
 # Write batch iterator for prototype data array
