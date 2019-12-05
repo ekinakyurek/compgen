@@ -263,12 +263,12 @@ function getbatch_proto(iter, vocab, B)
     if (b = length(edata)) != 0
         x, xp, I, D = unzip(edata)
         r   = sortperm(xp, by=length, rev=true)
-        x = x[r]; xp=xp[r] I=I[r]; D=D[r]
+        x = x[r]; xp=xp[r]; I=I[r]; D=D[r]
         xp_packed = _pack_sequence(xp)
         xp_mask   = get_mask_sequence(length.(xp); makefalse=true)
-        xmasked   = PadSequenceArray(map(xi->[vocab.specialIndices.bow; xi], x);
-                                    pad=vocab.specialIndices.mask))
-        ygold     = PadSequenceArray(map(xi->[xi;vocab.specialIndices.eow], x);
+        xmasked   = PadSequenceArray(map(xi->[vocab.specialIndices.bow; xi], x),
+                                    pad=vocab.specialIndices.mask)
+        ygold     = PadSequenceArray(map(xi->[xi;vocab.specialIndices.eow], x),
                                     pad=0)
         Imask     = get_mask_sequence(length.(I); makefalse=false) * 1.0f0
         Dmask     = get_mask_sequence(length.(D); makefalse=false) * 1.0f0
