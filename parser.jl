@@ -8,7 +8,8 @@ import KnetLayers: IndexedDict, _pack_sequence
     eow: end of word/sentence
     bow: beginning of word/sentence
 """
-const specialTokens = (unk="❓", mask="⭕️", eow="🏁", bow="🎬")
+const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬")
+const specialIndicies = (unk=1, mask=2, eow=3, bow=4)
 
 struct Vocabulary
     chars::IndexedDict{Char}
@@ -65,7 +66,7 @@ encode(s::NamedTuple, v::Vocabulary) = EncodedFormat(s,v)
 
 CrossDict = Dict{Vector{Int},Vector{Int}}
 
-function encode(data::Vector, v::Vocabulary; num=2)
+function encode(data::Vector, v::Vocabulary, config::Dict)
     lemma2loc, morph2loc = CrossDict(), CrossDict()
     edata = Array{EncodedFormat,1}(undef,length(data))
     for (i,datum) in enumerate(data)
@@ -73,7 +74,7 @@ function encode(data::Vector, v::Vocabulary; num=2)
           push!(get!(lemma2loc, encoded.lemma, Int[]),i)
           push!(get!(morph2loc, encoded.tags, Int[]), i)
     end
-    MorphData(edata,lemma2loc,morph2loc,num)
+    MorphData(edata,lemma2loc,morph2loc,config["num_examplers"])
 end
 
 function Vocabulary(data::Vector)
@@ -142,7 +143,7 @@ function Base.iterate(m::MorphData, s...)
     ex2 = [sfs for sfs in m.morph2loc[tags]  if sfs != index]
     s1 =  map(i->m.data[i].surface, randchoice(ex1, m.num, L))
     s2 =  map(i->m.data[i].surface, randchoice(ex2, m.num, L))
-    others =  map(i->m.data[i].surface, rand(1:L,4))
+    others =  map(i->m.data[i].surface, rand(1:L,2m.num))
     sc =  [[surface];s1;s2;others]
     length(sc) == 0 && error()
     r = sortperm(sc,by=length,rev=true)
@@ -158,7 +159,7 @@ function getbatch(iter,B)
         r   = sortperm(sfs, by=length, rev=true)
         xi = _pack_sequence(sfs[r])
         xt = map(_pack_sequence,exs[r])
-        return xi, xt, perms[r]
+        return (x=xi, examplers=xt, perm=perms[r])
     else
         return nothing
     end
@@ -181,7 +182,6 @@ function inserts_deletes(w1,w2)
 end
 
 function get_neighbours_dict(words, devs...; thresh=0.6, maxcnt=10, lang="unknown", prefix="data/prototype/")
-    prefix   = prefix * lang
     dist     = Levenshtein()
     words    = unique(words)
     adjlist  = Dict((i,Int[]) for i=1:length(words))
@@ -243,36 +243,39 @@ struct VocabularyProto
 end
 
 
-function parse_prototype_file(tsvfile)
-    data = map(l->collect.(split(l, '\t')), eachline(tsvfile))
-    vocab = Dict{Char,Int}()
-    for t in specialTokens; get!(vocab, first(t),length(vocab)+1); end
-    specialIndices = (unk=1, mask=2, eow=3, bow=4)
-    for l in data
-        for c in first(l)
-            get!(vocab,c,length(vocab)+1)
+function parse_prototype_file(tsvfile, vocab=nothing)
+    data = map(l->collect.(split(lowercase(l), '\t')), eachline(tsvfile))
+    if isnothing(vocab)
+        vocab = Dict{Char,Int}()
+        for t in specialTokens; get!(vocab, first(t),length(vocab)+1); end
+        specialIndices = (unk=1, mask=2, eow=3, bow=4)
+        for l in data
+            for c in first(l)
+                get!(vocab,c,length(vocab)+1)
+            end
         end
+        vocab = VocabularyProto(IndexedDict(vocab),specialTokens,specialIndices)
     end
-    vocab = VocabularyProto(IndexedDict(vocab),specialTokens,specialIndices)
     encode_proto(data,vocab), vocab
 end
 
 
 function getbatch_proto(iter, vocab, B)
-    edata = collect(Iterators.take(iter,B))
+    edata   = collect(Iterators.take(iter,B))
+    unk, mask, bow, eow = vocab.specialIndices
     if (b = length(edata)) != 0
         x, xp, I, D = unzip(edata)
         r   = sortperm(xp, by=length, rev=true)
         x = x[r]; xp=xp[r]; I=I[r]; D=D[r]
         xp_packed = _pack_sequence(xp)
+        x_mask    = get_mask_sequence(length.(x) .+ 2; makefalse=false)
         xp_mask   = get_mask_sequence(length.(xp); makefalse=true)
-        xmasked   = PadSequenceArray(map(xi->[vocab.specialIndices.bow; xi], x),
-                                    pad=vocab.specialIndices.mask)
-        ygold     = PadSequenceArray(map(xi->[xi;vocab.specialIndices.eow], x),
-                                    pad=0)
-        Imask     = get_mask_sequence(length.(I); makefalse=false) * 1.0f0
-        Dmask     = get_mask_sequence(length.(D); makefalse=false) * 1.0f0
-        return xmasked, ygold, xp_packed, xp_mask, (I=I, D=D, Imask=Imask, Dmask=Dmask)
+        xmasked   = PadSequenceArray(map(xi->[bow;xi;eow], x), pad=mask)
+        Imask     = get_mask_sequence(length.(I); makefalse=false)
+        Imasked   = PadSequenceArray(I, pad=mask)
+        Dmask     = get_mask_sequence(length.(D); makefalse=false)
+        Dmasked   = PadSequenceArray(D, pad=mask)
+        return xmasked, x_mask, xp_packed, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask)
     else
         return nothing
     end
