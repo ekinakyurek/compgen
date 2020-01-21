@@ -1,8 +1,8 @@
 using KnetLayers, Statistics, Plots
 import Knet: sumabs2, norm
 
-abstract type AbstractVAE end
-struct VAE <: AbstractVAE
+abstract type AbstractVAE{T} end
+struct VAE{Data} <: AbstractVAE{Data}
     encoder::LSTM
     Wμ::Multiply
     Wσ::Dense
@@ -10,18 +10,18 @@ struct VAE <: AbstractVAE
     Wdec::Multiply
     decoder::LSTM
     embed::Embed
-    vocab
+    vocab::Vocabulary{Data}
     config
 end
-function VAE(vocab, config) #V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
-    encoder      = LSTM(input=length(vocab.chars),hidden=config["H"],embed=config["E"])
-    embed    = Embed(input=length(vocab.chars),output=config["E"])
+function VAE(vocab::Vocabulary{T}, config) where T <: DataSet#V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
+    encoder      = LSTM(input=length(vocab.tokens),hidden=config["H"],embed=config["E"])
+    embed    = Embed(input=length(vocab.tokens),output=config["E"])
     decoder      = LSTM(input=(config["concatz"] ? config["E"]+config["Z"] : config["E"]),hidden=config["H"],dropout=config["pdrop"])
     transferto!(embed, encoder.embedding)
-    VAE(encoder,
+    VAE{T}(encoder,
         Multiply(input=config["H"], output=config["Z"]),
         Dense(input=config["H"], output=config["Z"], activation=config["activation"]()),
-        Multiply(input=config["H"],output=length(vocab.chars)),
+        Multiply(input=config["H"],output=length(vocab.tokens)),
         Multiply(input=config["Z"], output=config["H"]),
         decoder,
         embed,
@@ -29,7 +29,7 @@ function VAE(vocab, config) #V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4
         config)
 end
 
-struct EncAttentiveVAE <: AbstractVAE
+struct EncAttentiveVAE{Data} <: AbstractVAE{Data}
     encoder::LSTM
     Wμ::Multiply
     Wσ::Dense
@@ -41,23 +41,23 @@ struct EncAttentiveVAE <: AbstractVAE
     Wdec::Multiply
     decoder::LSTM
     embed::Embed
-    vocab
-    config
+    vocab::Vocabulary{Data}
+    config::Dict
 end
 
-function EncAttentiveVAE(vocab, config) # num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
-    encoder    = LSTM(input=length(vocab.chars),hidden=config["H"],embed=config["E"])
-    embed      = Embed(input=length(vocab.chars),output=config["E"])
+function EncAttentiveVAE(vocab::Vocabulary{T}, config) where T<:DataSet # num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
+    encoder    = LSTM(input=length(vocab.tokens),hidden=config["H"],embed=config["E"])
+    embed      = Embed(input=length(vocab.tokens),output=config["E"])
     decoder    = LSTM(input=(config["concatz"] ? config["E"]+config["Z"] : config["E"]),hidden=config["H"],dropout=config["pdrop"])
     transferto!(embed, encoder.embedding)
-    EncAttentiveVAE(encoder,
+    EncAttentiveVAE{T}(encoder,
                     Multiply(input=config["H"], output=config["Z"]), #MLP(H, H ÷ 2, Z, activation=ELU()),
                     Dense(input=config["H"], output=config["Z"], activation=config["activation"]()), #MLP(H, H ÷ 2, Z, activation=ELU()),
                     Linear(input=config["H"], output=config["H"]),
                     Linear(input=config["H"], output=config["H"]),
                     Linear(input=config["H"], output=config["H"]),
                     Linear(input=config["H"], output=config["H"]),
-                    Multiply(input=config["H"], output=length(vocab.chars)),
+                    Multiply(input=config["H"], output=length(vocab.tokens)),
                     Multiply(input=config["Z"],output=config["H"]),
                     decoder,
                     embed,
@@ -65,24 +65,22 @@ function EncAttentiveVAE(vocab, config) # num; H=512, E=16, Z=16, concatz=false,
                     config)
 end
 
-struct RNNLM
+struct RNNLM{Data} <: AbstractVAE{Data}
     decoder::LSTM
     output::Linear
-    vocab
-    config
+    vocab::Vocabulary{Data}
+    config::Dict
 end
-function RNNLM(vocab, config::Dict)
-    RNNLM(
-        LSTM(input=length(vocab.chars),hidden=config["H"],embed=config["E"],dropout=config["pdrop"],numLayers=config["Nlayers"]),
-        Linear(input=config["H"],output=length(vocab.chars)),
+function RNNLM(vocab::Vocabulary{D}, config::Dict) where D <: DataSet
+    RNNLM{D}(
+        LSTM(input=length(vocab.tokens),hidden=config["H"],embed=config["E"],dropout=config["pdrop"],numLayers=config["Nlayers"]),
+        Linear(input=config["H"],output=length(vocab.tokens)),
         vocab,
         config
     )
 end
 
-
-struct ProtoVAE
-#    encoder::Linear
+struct ProtoVAE{Data}
     embed::Embed
     decoder::LSTM
     output::Multiply
@@ -93,14 +91,14 @@ struct ProtoVAE
     context_pre_att::Multiply
     post_att::Linear
     pw::Pw
-    vocab
+    vocab::Vocabulary{Data}
     config::Dict
 end
 
-function ProtoVAE(vocab, config)
-    ProtoVAE(Embed(input=length(vocab.chars),output=config["E"]),#Linear(input=length(vocab.chars),output=config["E"]),
+function ProtoVAE(vocab::Vocabulary{T}, config) where T<:DataSet
+    ProtoVAE{T}(Embed(input=length(vocab.tokens),output=config["E"]),#Linear(input=length(vocab.tokens),output=config["E"]),
              LSTM(input=config["E"]+2config["Z"], hidden=config["H"], dropout=config["pdrop"]),
-             Multiply(input=2config["H"],output=length(vocab.chars)),
+             Multiply(input=2config["H"],output=length(vocab.tokens)),
              Dense(input=config["E"], output=config["Z"], activation=config["activation"]()),
              LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"]),
              Linear(input=config["H"] + 2config["Z"], output=2config["Z"]),
@@ -150,7 +148,7 @@ end
 function encode(m::EncAttentiveVAE, x, examplers)
     e         = encode_input(m,x)
     H,B       = size(e)
-    h         = encode_examplers(m, examplers, (H,4m.config["num_examplers"]+1,B))
+    h         = encode_examplers(m, examplers, (H,3m.config["num_examplers"],B))
     μ, αu     = attend(e, m.Weaμ, h, m.Wμa, m.Wμ; sumout=false)
     logσ², ασ = attend(e, m.Weaσ, h, m.Wσa, m.Wσ; sumout=false)
     μ, logσ², (αu=αu,ασ=ασ)
@@ -219,7 +217,7 @@ end
 
 
 function calc_ppl(m::AbstractVAE, data)
-    edata = Iterators.Stateful(encode(data, m.vocab, m.config))
+    edata = Iterators.Stateful(data)
     lss, nchars, ninstances = 0.0, 0, 0
     while (d = getbatch(edata,m.config["B"])) !== nothing
         J = ppl_iw(m, d.x, d.examplers)
@@ -253,7 +251,7 @@ function loss(m::AbstractVAE, xi, x; variational=true)
 end
 
 function attentions(m::EncAttentiveVAE, data)
-    edata = Iterators.Stateful(encode(data, m.vocab, m.vocab))
+    edata = Iterators.Stateful(data)#encode(data, m.vocab, m.vocab))
     attentions = []
     while ((d = getbatch(edata,m.config["B"])) !== nothing)
         x,examplers,perms = d
@@ -265,8 +263,8 @@ function attentions(m::EncAttentiveVAE, data)
     return attentions
 end
 
-function pretraining_autoencoder(model::MT, data; dev=nothing) where MT <: AbstractVAE
-    ae = MT(model.vocab, model.config)
+function pretraining_autoencoder(model, data; dev=nothing)
+    ae = model.config["model"](model.vocab, model.config)
     train!(ae, data; dev=dev, variational=false)
     for f in (:encoder, :Wμ, :Wσ, :Weaμ, :Weaσ, :Wμa, :Wμσ)
         if isdefined(model,f) && isdefined(ae,f)
@@ -286,12 +284,13 @@ function train!(m::AbstractVAE, data; dev=nothing, variational=true) #epoch=30, 
         m.config["dfbr"] = m.config["fb_rate"] == 0 ?  nothing :  (m.config["fb_rate"] / latentsize(m))
     end
     epoch = variational ? m.config["epoch"] : m.config["aepoch"]
+    bestparams = deepcopy(parameters(m))
     setoptim!(m,m.config["optim"])
     ppl = typemax(Float64)
     m.config["rpatiance"] = m.config["patiance"]
     for i=1:epoch
         lss, nchars, ninstances = 0.0, 0, 0
-        edata = Iterators.Stateful(encode(shuffle(data),m.vocab,m.config)) #FIXME: This makes me feel bad
+        edata = Iterators.Stateful(shuffle(data)) #encode(shuffle(data),m.vocab,m.config)) #FIXME: This makes me feel bad
         while (d = getbatch(edata,m.config["B"])) !== nothing
             J           = @diff loss(m, d.x, d.examplers; variational=variational)
             b           = first(d[1].batchSizes)
@@ -312,6 +311,7 @@ function train!(m::AbstractVAE, data; dev=nothing, variational=true) #epoch=30, 
         if !isnothing(dev)
             newppl = calc_ppl(m, dev)
             @show newppl
+            @show lss/nchars
             if newppl > ppl
                 lrdecay!(m, m.config["lrdecay"])
                 m.config["rpatiance"] = m.config["rpatiance"] - 1
@@ -320,11 +320,17 @@ function train!(m::AbstractVAE, data; dev=nothing, variational=true) #epoch=30, 
                     break
                 end
             else
+                for (best,current) in zip(bestparams,parameters(m))
+                    copyto!(value(best),value(current))
+                end
                 ppl = newppl
             end
         else
             println(loss=lss/nchars)
         end
+    end
+    for (best, current) in zip(bestparams,parameters(m))
+        copyto!(value(current),value(best))
     end
 end
 
@@ -352,7 +358,6 @@ function calc_au(model::AbstractVAE, data)
     H, T = latentsize(model), elementtype(model)
     μ    = zeroarray(arrtype, H,1)
     cnt  = 0
-    data = encode(data, model.vocab, model.config)
     edata = Iterators.Stateful(data)
     while ((d = getbatch(edata,model.config["B"])) !== nothing)
             μi,_ = encode(model, d.x, d.examplers)
@@ -372,13 +377,12 @@ function calc_au(model::AbstractVAE, data)
     return sum(au_var .>= model.config["authresh"]), au_var,  μavg
 end
 
-
 function calc_mi(model::AbstractVAE, data)
     H,T   = latentsize(model), elementtype(model)
     cnt = 0
     mu_batch_list, logvar_batch_list = [], []
     neg_entropy = 0.0
-    edata = Iterators.Stateful(encode(data, model.vocab, model.config))
+    edata = Iterators.Stateful(data)
     nz=0
     while ((d = getbatch(edata,model.config["B"])) !== nothing)
         μ,logσ² = encode(model, d.x, d.examplers)
@@ -411,7 +415,6 @@ function calc_mi(model::AbstractVAE, data)
     return mi
 end
 
-
 function sample(model::AbstractVAE, data)
     μ, σ =  samplingparams(model, data; useprior=model.config["useprior"])
     samples = []
@@ -427,7 +430,7 @@ end
 
 
 function sampleinter(model::AbstractVAE, data)
-    edata = Iterators.Stateful(encode(shuffle(data), model.vocab, model.config))
+    edata = Iterators.Stateful(shuffle(data))
     d = getbatch(edata,2)
     μ, logσ² = encode(model, d.x, d.examplers)
     r     =  similar(μ,size(μ,1),2)
@@ -456,14 +459,14 @@ isconcatz(model)   = model.config["concatz"]
 elementtype(model) = Float32
 isencatt(model)    = haskey(model, :Wμa) &&  haskey(model, :Wσa)
 
-
 function train!(model::RNNLM, data; dev=nothing)
+    bestparams = deepcopy(parameters(model))
     setoptim!(model,model.config["optim"])
     ppl = typemax(Float64)
     model.config["rpatiance"] = model.config["patiance"]
     for i=1:model.config["epoch"]
         lss, nchars, ninstances = 0.0, 0, 0
-        edata = Iterators.Stateful(encode(shuffle(data), model.vocab, model.config))
+        edata = Iterators.Stateful(shuffle(data))
         while (d = getbatch(edata,model.config["B"])) !== nothing
             J           = @diff loss(model, d.x)
             b           = first(d.x.batchSizes)
@@ -486,14 +489,19 @@ function train!(model::RNNLM, data; dev=nothing)
                     break
                 end
             else
+                for (best,current) in zip(bestparams,parameters(model))
+                    copyto!(value(best),value(current))
+                end
                 ppl = newppl
             end
         else
             println((loss=lss/nchars,))
         end
     end
+    for (best,current) in zip(bestparams,parameters(model))
+        copyto!(value(current),value(best))
+    end
 end
-
 
 function loss(morph::RNNLM, x; average=true)
     bow, eow = specialIndicies.bow, specialIndicies.eow
@@ -527,7 +535,6 @@ function decode(morph::RNNLM, x=nothing; sampler=sample)
         morph.output(drop(y))
     end
 end
-
 
 function calc_ppl(model::RNNLM, data; B=16)
     edata = Iterators.Stateful(data)
@@ -577,7 +584,6 @@ function encode(m::ProtoVAE, xp, ID; prior=false)
     token_emb = m.embed(xp_tokens)
     pout      = m.encoder(token_emb; hy=true, batchSizes=xp.batchSizes)
     proto_emb = mat(pout.hidden, dims=1)
-
     agenda    = m.agendaemb(vcat(proto_emb, z))
     inds      = _batchSizes2indices(xp.batchSizes)
     pcontext  = PadRNNOutput2(pout.y, inds)
@@ -596,11 +602,6 @@ function interact2(x, h; sumout=true, mask=nothing)
 end
 
 function decode(model::ProtoVAE, x, x_mask, xp_mask, pcontext, agenda; sampler=sample)
-    # TODO:
-    # xp_tokens = reshape(xp.tokens,length(xp.tokens),1)
-    # pout     = model.prototype_encoder(model.embed(xp_tokens); batchSizes=xp.batchSizes)
-    # inds     = _batchSizes2indices(xp.batchSizes)
-    # pcontext = PadRNNOutput2(pout.y, inds)
     H = hiddensize(model)
     B = size(agenda,2)
     if isnothing(x)
@@ -637,16 +638,16 @@ function sample(model::ProtoVAE, data)
     samples = []
     #protos  = []
     for i = 1 : (model.config["N"] ÷ B) + 1
-        if (d = getbatch_proto(dt,model.vocab,model.config["B"])) !== nothing
+        if (d = getbatch_proto(dt,model.config["B"])) !== nothing
             xmasked, x_mask, xp_packed, xp_mask, ID = d
             agenda, pcontext, z, inserts, deletes = encode(model, xp_packed, ID; prior=true)
             xp_mask = arrtype(xp_mask*eltype(arrtype)(1e18))
             y       = decode(model, nothing, nothing, xp_mask, pcontext, agenda)
             s       = mapslices(x->trim(x,model.vocab), y, dims=2)
             push!(samples,s)
-            inds = _batchSizes2indices(xp_packed.batchSizes)
-    #        proto = map(ind->join(model.vocab.chars[xp_packed.tokens[ind]]), inds)
-   #         push!(protos,proto)
+    #        inds = _batchSizes2indices(xp_packed.batchSizes)
+    #        proto = map(ind->join(model.vocab.tokens[xp_packed.tokens[ind]]), inds)
+    #        push!(protos,proto)
         end
     end
     cat1d(samples...) #, cat1d(protos...)
@@ -660,7 +661,6 @@ function loss(model::ProtoVAE, data; average=false)
     nllmask(y,(xmasked[:, 2:end] .* x_mask[:, 2:end])'; average=average) ./ size(z,2)
 end
 
-
 function vmfKL(m::ProtoVAE)
     k, d = m.config["Kappa"], 2m.config["Z"]
     k*((besseli(d/2.0+1.0,k) + besseli(d/2.0,k)*d/(2.0*k))/besseli(d/2.0, k) - d/(2.0*k)) +
@@ -669,13 +669,16 @@ function vmfKL(m::ProtoVAE)
 end
 
 function train!(model::ProtoVAE, data; eval=false, dev=nothing)
+    bestparams = deepcopy(parameters(model))
     setoptim!(model,model.config["optim"])
     ppl = typemax(Float64)
-    model.config["rpatiance"] = model.config["patiance"]
+    if !eval
+        model.config["rpatiance"] = model.config["patiance"]
+    end
     for i=1:(eval ? 1 : model.config["epoch"])
         lss, nchars, ninstances = 0.0, 0, 0
         dt = Iterators.Stateful(shuffle(data))
-        while (d = getbatch_proto(dt,model.vocab,model.config["B"])) !== nothing
+        while (d = getbatch_proto(dt,model.config["B"])) !== nothing
             if !eval
                 J = @diff loss(model, d)
             else
@@ -704,6 +707,9 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing)
                     break
                 end
             else
+                for (best,current) in zip(bestparams,parameters(model))
+                    copyto!(value(best),value(current))
+                end
                 ppl = newppl
             end
         else
@@ -713,6 +719,9 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing)
             ppl = exp(lss/nchars)
         end
     end
+    for (best, current) in zip(bestparams,parameters(model))
+        copyto!(value(current),value(best))
+    end
     return ppl
 end
 
@@ -720,68 +729,110 @@ calc_ppl(model::ProtoVAE, data) = train!(model::ProtoVAE, data; eval=true, dev=n
 calc_mi(model::ProtoVAE, data)  = nothing
 calc_au(model::ProtoVAE, data)  = nothing
 sampleinter(model::ProtoVAE, data) = nothing
+
 # TODO:
 # write ppl/mi/au functions for prototype model
-# finetune experiments for rnnlm
+# finetune experiments for rnnlm with multi layer
 # finetune experiments for prototype model
-# write conditional prototype model
-# combine codes together so there is one main
 
 
-# function decodensample(model, z, x; bow=4, sampler=sample, pdrop=0.4)
-#     nz,nsample,B = size(z)
-#     concatz = isconcatz(model)
-#     z   = reshape(z, nz, nsample * B)
-#     c   = model.Wdec(z)
-#     h   = tanh.(c)
-#     x,_ = nsample_packed_sequence(xi, bow, toend=false, nsample=nsample)
-#     e   = embed_x(model.embed, x, (concatz ? z : nothing))
-#     y   = model.decoder(e, h, c ; batchSizes=x.batchSizes).y
-#     model.output(dropout(y,pdrop))
-# end
+function preprocess(m::AbstractVAE{SIGDataSet}, train, devs...)
+    lemma2loc, morph2loc = CrossDict(), CrossDict()
+    for (i,datum) in enumerate(train)
+          push!(get!(lemma2loc, datum.lemma, Int[]),i)
+          push!(get!(morph2loc, datum.tags, Int[]), i)
+    end
+    L    = length(train)
+    num  = m.config["num_examplers"]
+    cond = m.config["conditional"]
+    sets = map((train, devs...)) do set
+        map(set) do d
+            s1 =  train[randchoice(get(lemma2loc,d.lemma,Int[]), num , L)]
+            s2 =  train[randchoice(get(morph2loc,d.tags,Int[]), num, L)]
+            s3 =  train[rand(1:L,num)]
+            examplars = map(x->xfield(SIGDataSet,x,cond),[s1;s2;s3])
+            x = xfield(SIGDataSet,d,cond)
+            r = sortperm(examplars,by=length,rev=true)
+            examplars = examplars[r]
+            (x=x, examplars=examplars, r=sortperm(r))
+        end
+    end
+end
 
-# function llsingleseq(lp,yt,inds)
-#     y = lp[:, inds]
-#     a = yt.tokens[inds]
-#     sum(y[findindices(y, a, dims=1)])
-# end
+function preprocess(m::AbstractVAE{SCANDataSet}, train, devs...)
+    out2loc = CrossDict()
+    for (i,datum) in enumerate(train)
+          push!(get!(out2loc, datum.output, Int[]),i)
+    end
+    L    = length(train)
+    num  = m.config["num_examplers"]
+    cond = m.config["conditional"]
+    sets = map((train, devs...)) do set
+        map(set) do d
+            s1 =  train[randchoice(get(out2loc,d.output,Int[]), num , L)]
+            s2 =  train[rand(1:L,2num)]
+            examplars = map(x->xfield(SCANDataSet,x,cond),[s1;s2])
+            x = xfield(SCANDataSet,d,cond)
+            r = sortperm(examplars,by=length,rev=true)
+            examplars = examplars[r]
+            (x=x, examplars=examplars, r=sortperm(r))
+        end
+    end
+end
 
+function preprocess(m::ProtoVAE{T}, train, devs...) where T<:DataSet
+    dist = Levenshtein()
+    thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
+    sets = map((train,devs...)) do set
+            map(d->xfield(T,d,cond),set)
+    end
+    words = map(sets) do set
+        map(d->String(map(UInt8,d)),set)
+    end
+    trnwords = first(words)
+    adjlists  = []
+    for (k,set) in enumerate(words)
+        adj = Dict((i,Int[]) for i=1:length(set))
+        for i=1:length(set)
+            cw         = set[i]
+            neighbours = adj[i]
+            cnt   = 0
+            inds  = k==1 ? ((i+1):length(trnwords)) : randperm(length(trnwords))
+            for j in inds
+                w    = trnwords[j]
+                diff = compare(cw,w,dist)
+                if diff > thresh && diff != 1
+                    push!(neighbours,j)
+                    if k==1
+                        push!(adj[j],i)
+                    end
+                    cnt+=1
+                    cnt == maxcnt && break
+                end
+            end
+            if isempty(neighbours)
+                push!(neighbours, rand(inds))
+            end
+        end
+        push!(adjlists, adj)
+    end
+    map(zip(sets,adjlists)) do (set, adj)
+        map(enumerate(set)) do (i,d)
+            protos = first(sets)[adj[i]]
+            (x=d, protos=protos, IDs=map(p->inserts_deletes(d,p), protos))
+        end
+    end
+end
 
-#
-# function train_ae!(model, train, vocab; dev=nothing, epoch=30, optim=Adam(), B=16)
-#     setoptim!(model,optim)
-#     for i=1:epoch
-#         lss, nchars, ninstances = 0.0, 0, 0
-#         edata = Iterators.Stateful(encode(shuffle(train),vocab))
-#         while (d = getbatch(edata,B)) !== nothing
-#             J           = @diff loss_ae(model, vocab, d[1], d[2])
-#             b           = first(d[1].batchSizes)
-#             n           = length(d[1].tokens) + b
-#             lss        += value(J)*b
-#             nchars     += n
-#             ninstances += b
-#             for w in parameters(J)
-#                 g = grad(J,w)
-#                 if !isnothing(g)
-#                     KnetLayers.update!(value(w), g, w.opt)
-#                 end
-#             end
-#         end
-#         if !isnothing(dev)
-#
-#         else
-#             println((loss=lss/nchars,))
-#         end
-#     end
-#     return model
-# end
-#
-# function loss_ae(morph, vocab, xi, x;)
-#     bow, eow = vocab.specialIndicies.bow, vocab.specialIndicies.eow
-#     z, _ , _ =  encode(morph, xi, isencatt(morph) ? x : nothing)
-#     xpadded  =  pad_packed_sequence(xi, bow, toend=false)
-#     y        =  decode(morph, z, xpadded)
-#     ygold    =  pad_packed_sequence(xi, eow)
-#     B        =  size(z,2)
-#     L        =  nllmask(y,ygold.tokens; average=false) / B
-# end
+import KnetLayers: load, save
+function save_preprocessed_data(m, data, esets)
+    fname = prefix(m.config["task"], m.config) * "_processesed.jld2"
+    save(fname, "data", data, "esets", esets, "tokens", m.vocab.tokens, "inpdict", m.vocab.inpdict, "outdict", m.vocab.outdict)
+end
+
+function load_preprocessed_data(config)
+    task = config["task"]
+    d = load(prefix(task, config) * "_processesed.jld2")
+    p = Parser{task}()
+    d["data"], d["esets"], Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p)
+end

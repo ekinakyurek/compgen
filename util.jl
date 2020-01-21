@@ -5,6 +5,16 @@ import Knet.SpecialFunctions: besseli,lgamma
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 
+###
+#### UTILS
+###
+dir(path...) = joinpath(pwd(),path...)
+const StrDict  = Dict{String,Int}
+const VStrDict = Dict{String,Vector{Int}}
+const CharDict = Dict{Char,Int}
+CrossDict = Dict{Vector{Int},Vector{Int}}
+###
+
 function applymask(y, mask, f::Function)
     sy,sm = size(y),size(mask)
     @assert sy[2:end] == sm "input and mask size are different $sy and $sm"
@@ -13,21 +23,40 @@ function applymask(y, mask, f::Function)
     broadcast(f, y, mask)
 end
 applymask(y, mask::Nothing, f::Function) = y
-# function expmask(y, mask)
-#      s = size(y)
-#      mask = reshape(mask,1,s[2:end]...)
-#      y .- mask # mask should be Float32 array with masked locations are large
-# end
-#
-# expmask(y, mask::Nothing) = y
-#
-# function normalmask(y, mask)
-#     s = size(y)
-#     mask = reshape(mask,1,s[2:end]...)
-#     y .* arrtype(mask) # mask should be Float32 array with masked locations are large
-# end
-#
-# normalmask(y, mask::Nothing) = y
+
+function randchoice(v,num,L)
+    l = length(v)
+    if l==0
+        Int[rand(1:L),rand(1:L)]
+    elseif l < num
+        rand(v,num)
+    else
+        v[randperm(l)[1:num]]
+    end
+end
+
+function inserts_deletes(w1::Vector{T},w2::Vector{T}) where T
+    D = T[]
+    I = T[]
+    for c1 in w1
+        if c1 ∉ w2
+            push!(D,c1)
+        end
+    end
+    for c2 in w2
+        if c2 ∉ w1
+            push!(I,c2)
+        end
+    end
+    return (I=I, D=D)
+end
+
+function tagstats(dict)
+    ls = map(length,values(dict))
+    xs = unique(ls)
+    ys = map(z->length(findall(l->l==z,ls)), xs)
+    return xs,ys
+end
 
 zeroarray(arrtype, d...; fill=0) = fill!(arrtype(undef,d...),fill)
 
@@ -39,7 +68,6 @@ end
 
 lrdecay!(M, decay::Real) =
     for p in parameters(M); p.opt.lr = p.opt.lr*decay; end
-
 
 function transferto!(m1,m2)
     for (w1,w2) in zip(parameters(m1), parameters(m2))
@@ -61,12 +89,12 @@ greedy(y) = mapslices(argmax, y, dims=1)
 function trim(chars::Vector{Int},vocab)
     out = Int[]
     for c in chars
-        c == vocab.specialIndices.eow && break
-        if c ∉ vocab.specialIndices
+        c == specialIndicies.eow && break
+        if c ∉ (specialIndicies.bow,specialIndicies.unk)
             push!(out,c)
         end
     end
-    return join(vocab.chars[out])
+    return join(vocab.tokens[out])
 end
 
 sample(y) = catsample(softmax(y;dims=1))
@@ -127,36 +155,20 @@ function nsample_packed_sequence(pseq, pad::Int; toend::Bool=true, nsample=500)
 end
 
 second(x) = x[2]
-
 combinedicts(dict1::Dict, dict2::Dict) = combinedicts!(copy(dict1),dict2)
-
 function combinedicts!(dict1::Dict, dict2::Dict)
     for (k,v) in dict2; dict1[k] = v; end
     return dict1
 end
 
-using Printf
-function prettymemory(b)
-    if b < 1000
-        value, units = b, "B"
-    elseif b < 1000^2
-        value, units = b / 1024, "KiB"
-    elseif b < 1000^3
-        value, units = b / 1024^2, "MiB"
-    else
-        value, units = b / 1024^3, "GiB"
+appenddicts(dict1::Dict, dict2::Dict) = appenddicts!(copy(dict1),dict2)
+function appenddicts!(dict1::Dict, dict2::Dict)
+    for (k,v) in dict2
+        if !haskey(dict1,k)
+            dict1[k] = length(dict1)+1
+        end
     end
-
-    if round(value) >= 100
-        str = string(@sprintf("%.0f", value), units)
-    elseif round(value * 10) >= 100
-        str = string(@sprintf("%.1f", value), units)
-    elseif value >= 0
-        str = string(@sprintf("%.2f", value), units)
-    else
-        str = "-"
-    end
-    return lpad(str, 7, " ")
+    return dict1
 end
 
 unzip(a) = map(x->getindex.(a, x), 1:length(first(a)))
@@ -187,8 +199,6 @@ function freebits(x; fb=4.0)
     mask = relu.(x .- fb)
     (x .* mask) ./ (mask .+ 1e-20)
 end
-
-
 
 struct Pw{T<:AbstractFloat}
     p::T; K::T; a::T; b::T; d::T; beta
@@ -263,3 +273,45 @@ function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0) where T<:I
         return padded
     end
 end
+
+
+
+# function expmask(y, mask)
+#      s = size(y)
+#      mask = reshape(mask,1,s[2:end]...)
+#      y .- mask # mask should be Float32 array with masked locations are large
+# end
+#
+# expmask(y, mask::Nothing) = y
+#
+# function normalmask(y, mask)
+#     s = size(y)
+#     mask = reshape(mask,1,s[2:end]...)
+#     y .* arrtype(mask) # mask should be Float32 array with masked locations are large
+# end
+#
+# normalmask(y, mask::Nothing) = y
+
+# using Printf
+# function prettymemory(b)
+#     if b < 1000
+#         value, units = b, "B"
+#     elseif b < 1000^2
+#         value, units = b / 1024, "KiB"
+#     elseif b < 1000^3
+#         value, units = b / 1024^2, "MiB"
+#     else
+#         value, units = b / 1024^3, "GiB"
+#     end
+#
+#     if round(value) >= 100
+#         str = string(@sprintf("%.0f", value), units)
+#     elseif round(value * 10) >= 100
+#         str = string(@sprintf("%.1f", value), units)
+#     elseif value >= 0
+#         str = string(@sprintf("%.2f", value), units)
+#     else
+#         str = "-"
+#     end
+#     return lpad(str, 7, " ")
+# end
