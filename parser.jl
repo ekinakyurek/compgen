@@ -2,8 +2,8 @@ using LibGit2, Random, KnetLayers, StringDistances
 import KnetLayers: IndexedDict, _pack_sequence
 abstract type AbstractVAE{T} end
 
-const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬")
-const specialIndicies = (unk=1, mask=2, eow=3, bow=4)
+const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬", sep="→")
+const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5)
 
 """
     DataSet
@@ -12,27 +12,50 @@ const specialIndicies = (unk=1, mask=2, eow=3, bow=4)
 abstract type DataSet; end
 abstract type SIGDataSet <: DataSet; end
 abstract type SCANDataSet <: DataSet; end
+abstract type YelpDataSet <: DataSet; end
 
 struct Parser{MyDataSet}
     regex::Union{Regex,Nothing}
     partsSeperator::Union{Char,Nothing}
     tagsSeperator::Union{Char,Nothing}
+    freewords::Union{Set{String},Nothing}
 end
 
-Parser{SIGDataSet}(version=:default)  = Parser{SIGDataSet}(nothing,'\t',';')
-Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\: (.*?)$",' ',nothing)
+Parser{SIGDataSet}(version=:default)  = Parser{SIGDataSet}(nothing,'\t',';', nothing)
+Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\: (.*?)$",' ',nothing, nothing)
+Parser{YelpDataSet}(version=:default) = Parser{YelpDataSet}(nothing,'\t',nothing,
+                                                            Set(readlines(defaultpath(YelpDataSet)*"/free_parsed.txt")))
+
 defaultpath(dataset::Type{SIGDataSet}) = dir("data","Sigmorphon")
 defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCAN")
+defaultpath(dataset::Type{YelpDataSet}) = dir("data","Yelp")
 
 download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet)) =
     !isdir(path) ? LibGit2.clone("https://github.com/sigmorphon/conll2018", path) : true
 download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet)) =
     !isdir(path) ? LibGit2.clone("https://github.com/brendenlake/SCAN", path) : true
 
+function download(dataset::Type{YelpDataSet}; path=defaultpath(YelpDataSet))
+    server = "https://worksheets.codalab.org/rest/bundles/0x984fe19b60f1479b925933eacbfda8d8/contents/blob/"
+    for file in ["train","test","valid"] .*  ".tsv"
+        Base.download(server * file, path * file)
+    end
+    Base.download(server * "free.txt", path * "free.txt")
+end
+
 prefix(dataset::Type{SCANDataSet}, opt) =
     joinpath(defaultpath(SCANDataSet), string(opt["model"],"_",opt["task"],"_",opt["split"],"_condition_",opt["conditional"]))
 prefix(dataset::Type{SIGDataSet}, opt) =
     joinpath(defaultpath(SIGDataSet), string(opt["model"],"_",opt["task"],"_",opt["lang"],"_condition_",opt["conditional"]))
+prefix(dataset::Type{YelpDataSet}, opt) =
+    joinpath(defaultpath(YelpDataSet), string(opt["model"], "_", opt["task"]))
+
+
+function rawfiles(dataset::Type{YelpDataSet}, config)
+    ["data/Yelp/train.tsv",
+     "data/Yelp/test.tsv",
+     "data/Yelp/valid.tsv"]
+end
 
 function rawfiles(dataset::Type{SIGDataSet}, config)
     lang = config["lang"]
@@ -44,7 +67,7 @@ function rawfiles(dataset::Type{SIGDataSet}, config)
 end
 
 function rawfiles(dataset::Type{SCANDataSet}, config)
-    split, modifier  = config["split"], config["split_modifier"]
+    split, modifier  = config["split"], config["splitmodifier"]
     stsplit = replace(split, "_"=>"")
     if split in ("length","simple")
         ["data/SCAN/$(split)_split/tasks_train_$(stsplit).txt",
@@ -62,6 +85,7 @@ struct Vocabulary{MyDataSet,T}
     parser::Parser{MyDataSet}
 end
 
+Base.length(v::Vocabulary) = length(v.tokens)
 collectstr(str::AbstractString) = map(string,collect(str))
 function parseDataLine(line::AbstractString, parser::Parser{SIGDataSet})
     lemma, surface, tokens = split(line, '\t')
@@ -72,6 +96,12 @@ function parseDataLine(line::AbstractString, parser::Parser{SCANDataSet})
     m   = match(parser.regex, line)
     x,y = m.captures
     return (input=split(x,parser.partsSeperator), output=split(y,parser.partsSeperator))
+end
+
+function parseDataLine(line::AbstractString, parser::Parser{YelpDataSet})
+    #input, proto = split(replace(lowercase(line), r"[^\w\s]"=>s""),"\t")
+    input, proto = split(lowercase(strip(line)), '\t')
+    return (input=filter(!isempty,split(input,' ')), proto=filter(!isempty,split(proto,' ')))
 end
 
 function parseDataFile(f::AbstractString, parser::Parser)
@@ -87,6 +117,18 @@ end
 function EncodedFormat(a::NamedTuple, v::Vocabulary{SCANDataSet})
     (input=map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input),
      output=map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.output))
+end
+
+function EncodedFormat(a::NamedTuple, v::Vocabulary{YelpDataSet})
+    input       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input)
+    proto       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.proto)
+    si,sp       = Set(input), Set(proto)
+    #limit       = length(v.parser.freewords) + length(specialTokens)
+    #I = filter(x->x>limit,setdiff(si,sp)) |> collect
+    #D = filter(x->x>limit,setdiff(sp,si)) |> collect
+    (input = input,
+     proto = proto,
+     ID    = inserts_deletes(input,proto))
 end
 
 encode(line::NamedTuple, v::Vocabulary) = EncodedFormat(line,v)
@@ -111,7 +153,7 @@ function Vocabulary(data::Vector, parser::Parser{SIGDataSet})
         end
     end
     tokens = appenddicts(inpdict,outdict)
-    Vocabulary{SIGDataSet, String}(IndexedDict(tokens), IndexedDict(inpdict), IndexedDict(outdict), parser)
+    Vocabulary{SIGDataSet, String}(IndexedDict(outdict), IndexedDict(inpdict), IndexedDict(outdict), parser)
 end
 
 function Vocabulary(data::Vector, parser::Parser{SCANDataSet})
@@ -129,11 +171,41 @@ function Vocabulary(data::Vector, parser::Parser{SCANDataSet})
         end
     end
     tokens = appenddicts(inpdict,outdict)
-    Vocabulary{SCANDataSet, String}(IndexedDict(tokens), IndexedDict(inpdict), IndexedDict(outdict), parser)
+    Vocabulary{SCANDataSet, String}(IndexedDict(inpdict), IndexedDict(inpdict), IndexedDict(outdict), parser)
 end
 
-xfield(::Type{SIGDataSet}, x, cond::Bool=true) = cond ? [x.lemma;x.tags;[specialIndicies.mask];x.surface] : x.surface
-xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.mask];x.output] : x.input
+function Vocabulary(data::Vector, parser::Parser{YelpDataSet})
+    cntdict = StrDict()
+    for (i,(inp,out)) in enumerate(data)
+        for w::String in inp
+            cntdict[w] = get!(cntdict, w, 0) + 1
+        end
+        for w::String in out
+            cntdict[w] = get!(cntdict, w, 0) + 1
+        end
+    end
+    srtdvocab = sort(collect(cntdict), by=x->x[2], rev=true)
+    inpdict = StrDict()
+    for (i,T) in enumerate(specialTokens)
+        get!(inpdict,T,i)
+    end
+    for (i,T) in enumerate(parser.freewords)
+        get!(inpdict,T,length(inpdict)+1)
+    end
+    println(length(inpdict))
+    for (k,v) in srtdvocab
+        get!(inpdict, k, length(inpdict) + 1)
+        if length(inpdict) == 10000
+            break
+        end
+    end
+    Vocabulary{YelpDataSet, String}(IndexedDict(inpdict), IndexedDict(inpdict), IndexedDict(inpdict), parser)
+end
+
+
+xfield(::Type{SIGDataSet},  x, cond::Bool=true) = cond ? [x.lemma;x.tags;[specialIndicies.sep];x.surface] : x.surface
+xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
+xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
 
 import StringDistances: compare
 compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
@@ -153,29 +225,56 @@ function getbatch(iter,B)
     end
 end
 
+function pickprotos(edata)
+    x, xp, ID = unzip(edata)
+    if first(xp) isa Vector{Int}
+        I,D       = unzip(ID)
+        #xp = x  # uncomment  if you want to debug with copying. config["kill_edit"] = true
+        r         = sortperm(xp, by=length, rev=true)
+        x[r], xp[r], I[r], D[r]
+    else
+        inds = map(l->rand(1:l),length.(xp))
+        xp   = map(d->d[1][d[2]],zip(xp,inds))
+        ID   = map(d->d[1][d[2]],zip(ID,inds))
+        I,D  = unzip(ID)
+        r    = sortperm(xp, by=length, rev=true)
+        x[r], xp[r], I[r], D[r]
+    end
+end
+
 function getbatch_proto(iter, B)
     edata   = collect(Iterators.take(iter,B))
     unk, mask, bow, eow = specialIndicies
     if (b = length(edata)) != 0
-        x, xp, ID = unzip(edata)
-        inds = map(l->rand(1:l),length.(xp))
-        xp   = map(d->d[1][d[2]],zip(xp,inds))
-        ID   = map(d->d[1][d[2]],zip(ID,inds))
-        I,D  = first.(ID), second.(ID)
-        r   = sortperm(xp, by=length, rev=true)
-        x = x[r]; xp=xp[r]; I=I[r]; D=D[r]
-        xp_packed = _pack_sequence(xp)
-        x_mask    = get_mask_sequence(length.(x) .+ 2; makefalse=false)
-        xp_mask   = get_mask_sequence(length.(xp); makefalse=true)
-        xmasked   = PadSequenceArray(map(xi->[bow;xi;eow], x), pad=mask)
-        Imask     = get_mask_sequence(length.(I); makefalse=false)
-        Imasked   = PadSequenceArray(I, pad=mask)
-        Dmask     = get_mask_sequence(length.(D); makefalse=false)
-        Dmasked   = PadSequenceArray(D, pad=mask)
-        return xmasked, x_mask, xp_packed, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask)
-    else
-        return nothing
+        d           = pickprotos(edata)
+        x, xp, I ,D = d
+        x = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
+        xp_packed   = _pack_sequence(xp)
+        x_mask      = get_mask_sequence(length.(x) .+ 2; makefalse=false)
+        xp_mask     = get_mask_sequence(length.(xp); makefalse=true)
+        xmasked     = PadSequenceArray(map(xi->[bow;xi;eow], x), pad=mask)
+        Imask       = get_mask_sequence(length.(I); makefalse=false)
+        Imasked     = PadSequenceArray(I, pad=mask)
+        Dmask       = get_mask_sequence(length.(D); makefalse=false)
+        Dmasked     = PadSequenceArray(D, pad=mask)
+        copymask    = create_copy_mask(xp, xp_mask, xmasked)
+        return xmasked, x_mask, xp_packed, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask), copymask, d
     end
+    return nothing
+end
+
+function create_copy_mask(xp, xp_mask, xmasked)
+    mask = trues(size(xmasked,2)-1, size(xp_mask,2), length(xp)) # T x T' x B
+    for i=1:size(xmasked,1)
+        for t=2:size(xmasked,2)
+            token =  xmasked[i,t]
+            if token ∉ specialIndicies
+                inds  = findall(t->t==token,xp[i])
+                mask[t,inds,i] .= false
+            end
+        end
+    end
+    return mask
 end
 
 

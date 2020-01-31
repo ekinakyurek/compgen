@@ -1,10 +1,11 @@
 using KnetLayers, Distributions
-import KnetLayers: nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
+import KnetLayers: Knet, nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
 const parameters = KnetLayers.params
 import Knet.SpecialFunctions: besseli,lgamma
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
-
+@eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
+using ProgressBars, Printf
 ###
 #### UTILS
 ###
@@ -35,7 +36,7 @@ function randchoice(v,num,L)
     end
 end
 
-function inserts_deletes(w1::Vector{T},w2::Vector{T}) where T
+function inserts_deletes(w2::Vector{T},w1::Vector{T}) where T
     D = T[]
     I = T[]
     for c1 in w1
@@ -62,7 +63,9 @@ zeroarray(arrtype, d...; fill=0) = fill!(arrtype(undef,d...),fill)
 
 function setoptim!(M, optimizer)
     for p in parameters(M)
-        p.opt = deepcopy(optimizer);
+        if isnothing(p.opt)
+            p.opt = deepcopy(optimizer)
+        end
     end
 end
 
@@ -94,7 +97,7 @@ function trim(chars::Vector{Int},vocab)
             push!(out,c)
         end
     end
-    return join(vocab.tokens[out])
+    return join(vocab.tokens[out],' ')
 end
 
 sample(y) = catsample(softmax(y;dims=1))
@@ -107,7 +110,14 @@ function catsample(p)
     end
 end
 
-catlast(x) = vcat(x[:,:,1],x[:,:,2])
+function finalstates(hidden)
+    if ndims(hidden)==3 && size(hidden,3) > 1
+        vcat(hidden[:,:,end-1],hidden[:,:,end])
+    else
+        return reshape(hidden, size(hidden,1), size(hidden,2))
+    end
+ end
+
 drop(x) = dropout(x,0.4)
 
 function PadRNNOutput2(y, indices)
@@ -195,7 +205,7 @@ function get_mask_sequence(lengths::Vector{Int}; makefalse=true)
     end
 end
 
-function freebits(x; fb=4.0)
+function freebits(x, fb=4.0)
     mask = relu.(x .- fb)
     (x .* mask) ./ (mask .+ 1e-20)
 end
@@ -227,30 +237,32 @@ function sample(pw::Pw{T}) where T
     end
 end
 
-function sample_orthonormal_to(μ, p)
+l2norm(x; dims=1) = sqrt.(sumabs2(x, dims=dims))
+
+function sample_orthonormal_to(μ, μnorm, p)
     v      = randn!(similar(μ))
-    r      = sum(μ .* v,dims=1)
+    r      = sum(μ .* v,dims=1) ./ μnorm
     ortho  = v .-  μ .* r
-    ortho ./ sqrt.(sumabs2(ortho, dims=1))
+    ortho ./ l2norm(ortho)
 end
 
 add_norm_noise(μnorm, ϵ, max_norm) =
      min.(μnorm, max_norm-ϵ) .+ rand!(similar(μnorm)) .* ϵ
 
-function sample_vMF(μ, ϵ, max_norm, pw=Pw{eltype(μ)}(size(μ,1),25); prior=false)
+function sample_vMF(μ, ϵ, max_norm, pw::Pw; prior=false)
     if prior
         μ      = randn!(μ)
-        μnorm  = sqrt.(sumabs2(μ, dims=1))
+        μnorm  = l2norm(μ)
         zdir   = μ ./ μnorm
         znorm  = convert(arrtype,max_norm*rand(1,size(μ,2)))
         zdir .* znorm
     else
-        w   = reshape([sample(pw) for i=1:size(μ,2)],1,size(μ,2))
-        w   = convert(arrtype,w)
-        μ   = μ .+ 1e-10
-        μnorm    = sqrt.(sumabs2(μ, dims=1))
+        w        = reshape([sample(pw) for i=1:size(μ,2)],1,size(μ,2))
+        w        = convert(arrtype,w)
+        μ        = μ .+ 1e-10
+        μnorm    = l2norm(μ)
         μnoise   = add_norm_noise(μnorm, ϵ, max_norm)
-        v        = sample_orthonormal_to(μ ./ μnorm, pw.p)
+        v        = sample_orthonormal_to(μ, μnorm, pw.p)
         scale    = sqrt.(1 .- w.^2)
         μscale   = μ .* w ./ μnorm
         (v .* scale  + μscale) .* μnoise
@@ -272,6 +284,44 @@ function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0) where T<:I
         end
         return padded
     end
+end
+
+initEmbRandom(embDim,InputDim) =  randn(Float32,embDim,InputDim)
+
+function sentenceEmb(sentence, wordVectors, dim)
+    words = split(sentence)
+    wordEmbs = initEmbRandom(dim, length(words))
+    for (idx, word) in enumerate(words)
+        if haskey(wordVectors,word)
+            wordEmbs[:,idx] .= wordVectors[word]
+        end
+    end
+    return vec(sum(wordEmbs,dims=2))
+end
+
+function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove/glove.6B.")
+    # default dictionary to use for embeddings
+    embeddings = initEmbRandom(dim,length(wordsDict))
+    wordVectors  = Dict()
+    open(prefix*string(dim)*"d.txt") do f
+        for line in eachline(f)
+            line = split(strip(line))
+            word = lowercase(line[1])
+            vector = [parse(Float32,x) for x in line[2:end]]
+            wordVectors[word] = vector
+        end
+    end
+    for (w,index) in wordsDict
+        if occursin(" ",w)
+            print("he")
+            embeddings[:,index] .= sentenceEmb(w, wordVectors)
+        else
+            if haskey(wordVectors,w)
+                embeddings[:,index] .= wordVectors[w]
+            end
+        end
+    end
+    return embeddings
 end
 
 
