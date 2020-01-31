@@ -5,7 +5,7 @@ import Knet.SpecialFunctions: besseli,lgamma
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
-using ProgressBars, Printf
+using Printf
 ###
 #### UTILS
 ###
