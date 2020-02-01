@@ -97,7 +97,7 @@ end
 
 
 yelp_config = Dict(
-               "model"=> ProtoVAE,
+               "model"=> ProtoVAE2,
                "lang"=>"turkish",
                "kill_edit"=>false,
                "A"=>256,
