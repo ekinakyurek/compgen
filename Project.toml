@@ -1,0 +1,11 @@
+[deps]
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+Knet = "1902f260-5fb4-5aff-8c31-6271790ab950"
+KnetLayers = "e09e3f5a-3c2e-516c-a806-60ae64389a85"
+LibGit2 = "76f85450-5226-5b5a-8eaa-529ad045b433"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StringDistances = "88034a9c-02f8-509d-84a9-84ec65e18404"
+UnicodePlots = "b8865327-cd53-5732-bb35-84acbb429228"

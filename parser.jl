@@ -24,23 +24,47 @@ end
 Parser{SIGDataSet}(version=:default)  = Parser{SIGDataSet}(nothing,'\t',';', nothing)
 Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\: (.*?)$",' ',nothing, nothing)
 Parser{YelpDataSet}(version=:default) = Parser{YelpDataSet}(nothing,'\t',nothing,
-                                                            Set(readlines(defaultpath(YelpDataSet)*"/free_parsed.txt")))
+                                                            Set(readlines(defaultpath(YelpDataSet)*"/free.txt")))
 
 defaultpath(dataset::Type{SIGDataSet}) = dir("data","Sigmorphon")
 defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCAN")
 defaultpath(dataset::Type{YelpDataSet}) = dir("data","Yelp")
 
-download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet)) =
-    !isdir(path) ? LibGit2.clone("https://github.com/sigmorphon/conll2018", path) : true
+function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet)) 
+    !isdir(path) && LibGit2.clone("https://github.com/sigmorphon/conll2018", path)
+    unipath = "data/unimorph"
+    if !isdir(unipath)
+        mkdir(unipath)
+        server = "https://github.com/unimorph/"
+        for lang in ("eng", "spa", "tur")
+            langpath = joinpath(unipath,lang)
+            !isdir(langpath) && LibGit2.clone(server*lang, joinpath(langpath))
+        end
+    end
+    return true
+end
 download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet)) =
     !isdir(path) ? LibGit2.clone("https://github.com/brendenlake/SCAN", path) : true
 
 function download(dataset::Type{YelpDataSet}; path=defaultpath(YelpDataSet))
-    server = "https://worksheets.codalab.org/rest/bundles/0x984fe19b60f1479b925933eacbfda8d8/contents/blob/"
-    for file in ["train","test","valid"] .*  ".tsv"
-        Base.download(server * file, path * file)
+    if !isdir(data/Glove)
+        download("http://nlp.stanford.edu/data/glove.6B.zip","data/glove.6B.zip")
+        run(`unzip -qq data/glove.6B.zip -d data/Glove/`)
+        rm("data/glove.6B.zip")
+    else
+        @warn "There is already data/Glove folder, skipping..."
     end
-    Base.download(server * "free.txt", path * "free.txt")
+    if !isdir("data/Yelp")
+        mkdir("data/Yelp")
+        server = "https://worksheets.codalab.org/rest/bundles/0x984fe19b60f1479b925933eacbfda8d8/contents/blob/"
+        for file in ["train","test","valid"] .*  ".tsv"
+            Base.download(joinpath(server,file), joinpath(path,file))
+        end
+        Base.download(joinpath(server,"free.txt"),  joinpath(path,"free.txt"))
+    else
+        @warn "There is already data/Yelp folder, skipping..."
+    end
+    return true
 end
 
 prefix(dataset::Type{SCANDataSet}, opt) =

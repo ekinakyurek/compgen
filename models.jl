@@ -55,14 +55,14 @@ struct VAE{Data} <: AbstractVAE{Data}
     config
 end
 
-load_embed(config, embeddings::Nothing) =
+load_embed(vocab, config, embeddings::Nothing) =
     Embed(input=length(vocab),output=config["E"])
 
-load_embed(config, embeddings::AbstractArray) =
+load_embed(vocab, config, embeddings::AbstractArray) =
     Embed(param(convert(arrtype,copy(embeddings))))
 
 function VAE(vocab::Vocabulary{T}, config; embeddings=nothing) where T <: DataSet#V, num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
-    embed    = load_embed(config, embeddings)
+    embed    = load_embed(vocab, config, embeddings)
     encoder  = LSTM(input=length(vocab),hidden=config["H"],embed=embed)
     decoder  = LSTM(input=(config["concatz"] ? config["E"]+config["Z"] : config["E"]),hidden=config["H"],dropout=config["pdrop"])
     #transferto!(embed, encoder.embedding)
@@ -94,7 +94,7 @@ struct EncAttentiveVAE{Data} <: AbstractVAE{Data}
 end
 
 function EncAttentiveVAE(vocab::Vocabulary{T}, config) where T<:DataSet # num; H=512, E=16, Z=16, concatz=false, pdrop=0.4)
-    embed      = load_embed(config, embeddings)
+    embed      = load_embed(vocab, config, embeddings)
     encoder    = LSTM(input=length(vocab),hidden=config["H"],embed=embed)
     decoder    = LSTM(input=(config["concatz"] ? config["E"]+config["Z"] : config["E"]),hidden=config["H"],dropout=config["pdrop"])
     #transferto!(embed, encoder.embedding)
@@ -121,7 +121,7 @@ struct RNNLM{Data} <: AbstractVAE{Data}
 end
 function RNNLM(vocab::Vocabulary{D}, config::Dict; embeddings=nothing) where D <: DataSet
     RNNLM{D}(
-        LSTM(input=length(vocab),hidden=config["H"],embed=load_embed(config, embeddings),dropout=config["pdrop"],numLayers=config["Nlayers"]),
+        LSTM(input=length(vocab),hidden=config["H"],embed=load_embed(vocab, config, embeddings),dropout=config["pdrop"],numLayers=config["Nlayers"]),
         Linear(input=config["H"],output=length(vocab)),
         vocab,
         config
@@ -145,7 +145,7 @@ end
 
 function ProtoVAE(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     dinput = config["concatz"] ? config["E"]+config["A"] : config["E"]
-    ProtoVAE{T}(load_embed(config, embeddings),
+    ProtoVAE{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                 Multiply(input=2config["H"], output=length(vocab)),
                 Dense(input=config["E"], output=config["Z"], activation=config["activation"]()),
@@ -179,7 +179,7 @@ end
 
 function ProtoVAE2(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     dinput = config["H"] + config["E"] + 2config["E"] + config["A"]
-    ProtoVAE2{T}(load_embed(config, embeddings),
+    ProtoVAE2{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                 Multiply(input= 2config["H"] + 2config["E"], output=length(vocab)),
                 Dense(input=config["E"], output=config["Z"], activation=config["activation"]()),
