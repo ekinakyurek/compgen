@@ -755,7 +755,7 @@ function decode(model::ProtoVAE, x, x_mask, xp_mask, xp, pcontext, agenda; sampl
     end
 end
 
-function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true)
+function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sanitize=false)
     N  = isnothing(N) ? model.config["N"] : N
     B  = model.config["B"]
     dt = Iterators.Stateful(shuffle(data))
@@ -765,6 +765,10 @@ function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true)
         b =  min(N,B)
         if (d = getbatch_proto(dt,b)) !== nothing
             xmasked, x_mask, xp_packed, xp_mask, ID, copymask, unbatched = d
+            b = length(first(unbatched))
+            if sanitize
+                ID = (I=ones(Int,b,1), D=ones(Int,b,1), Imask = falses(b,1), Dmask = falses(b,1))
+            end
             agenda, pcontext, z, inserts, deletes = encode(model, xp_packed, ID; prior=prior)
             y       = decode(model, nothing, nothing, xp_mask, unbatched[2],  pcontext, agenda; sampler=sampler)
             s       = mapslices(x->trim(x,vocab), y, dims=2)
@@ -815,17 +819,21 @@ end
 
 function print_ex_samples(model, data)
     println("generating few examples")
-    for sampler in (sample, argmax)
-        println("with sampler $(sampler)")
-        for s in sample(model, data; N=10, sampler=sampler, prior=true)
-            println("===================")
-            for field in propertynames(s)
-                println(field," : ", getproperty(s,field))
+    #for sampler in (sample, argmax)
+    for sanitize in (false,true)
+        for prior in (false,true)
+            println("Prior: $(prior) , Sanatize: $(sanitize)")
+            for s in sample(model, data; N=10, sampler=argmax, prior=prior, sanitize=sanitize)
+                println("===================")
+                for field in propertynames(s)
+                    println(field," : ", getproperty(s,field))
+                end
+                println("===================")
             end
-            println("===================")
         end
-        println("done")
     end
+    println("done")
+    #end
 end
 
 
@@ -860,7 +868,7 @@ function train!(model::Union{ProtoVAE,ProtoVAE2}, data; eval=false, dev=nothing)
                     KnetLayers.update!(value(w), g, w.opt)
                 end
             end
-            if i%100 ==0
+            if i%500 ==0
                 print_ex_samples(model, data)
             end
         end
@@ -1061,7 +1069,7 @@ function loss(model::ProtoVAE2, data; average=false)
     nllmask(y,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=average) ./ length(first(unbatched))
 end
 
-function sample(model::ProtoVAE2, data; N=nothing, sampler=sample, prior=true)
+function sample(model::ProtoVAE2, data; N=nothing, sampler=sample, prior=true, sanitize=false)
     N  = isnothing(N) ? model.config["N"] : N
     B  = model.config["B"]
     dt = Iterators.Stateful(shuffle(data))
@@ -1071,6 +1079,10 @@ function sample(model::ProtoVAE2, data; N=nothing, sampler=sample, prior=true)
         b =  min(N,B)
         if (d = getbatch_proto(dt,b)) !== nothing
             xmasked, x_mask, xp_packed, xp_mask, ID, copymask, unbatched = d
+            b = length(first(unbatched))
+            if sanitize
+                ID = (I=ones(Int,b,1), D=ones(Int,b,1), Imask = falses(b,1), Dmask = falses(b,1))
+            end
             agenda, pcontext, z, I, D  = encode(model, xp_packed, ID; prior=prior)
             y,preds = decode(model, xmasked, (xp_mask, pcontext), (I,D,ID.Imask,ID.Dmask), agenda; sampler=sampler, training=false)
             s       = mapslices(x->trim(x,vocab), preds, dims=2)
