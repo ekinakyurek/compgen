@@ -37,7 +37,7 @@ function (m::Attention)(memory, query; pdrop=0, mask=nothing, batchdim=3)
     if !isnothing(mask)
         score = applymask(score, mask, +)
     end
-    weights = softmax(score;dims=2) #[N,T',B]
+    weights  = softmax(score;dims=2) #[N,T',B]
     values   = bmm(memory,weights;transB=true) # [M,N,B]
     return mat(values), mat(weights)
 end
@@ -820,16 +820,14 @@ end
 function print_ex_samples(model, data)
     println("generating few examples")
     #for sampler in (sample, argmax)
-    for sanitize in (false,true)
-        for prior in (false,true)
-            println("Prior: $(prior) , Sanatize: $(sanitize)")
-            for s in sample(model, data; N=10, sampler=argmax, prior=prior, sanitize=sanitize)
-                println("===================")
-                for field in propertynames(s)
-                    println(field," : ", getproperty(s,field))
-                end
-                println("===================")
+    for prior in (true, false)
+        println("Prior: $(prior) , attend_pr: 0.0")
+        for s in sample(model, data; N=5, sampler=argmax, prior=prior, sanitize=true)
+            println("===================")
+            for field in propertynames(s)
+                println(field," : ", getproperty(s,field))
             end
+            println("===================")
         end
     end
     println("done")
@@ -959,7 +957,7 @@ function preprocess(m::AbstractVAE{SCANDataSet}, train, devs...)
     end
 end
 
-function preprocess(m::ProtoVAE{T}, train, devs...) where T<:DataSet
+function preprocess(m::Union{ProtoVAE{T}, ProtoVAE2{T}}, train, devs...) where T<:DataSet
     dist = Levenshtein()
     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
     sets = map((train,devs...)) do set
@@ -1006,6 +1004,7 @@ end
 function preprocess(m::ProtoVAE{YelpDataSet}, train, devs...)
     return (train,devs...)
 end
+
 
 import KnetLayers: load, save
 function save_preprocessed_data(m, data, esets, embeddings)
@@ -1065,7 +1064,20 @@ end
 function loss(model::ProtoVAE2, data; average=false)
     xmasked, x_mask, xp_packed, xp_mask, ID, copymask, unbatched = data
     agenda, pcontext, z, I, D = encode(model, xp_packed, ID; prior=false)
-    y, preds = decode(model, xmasked, (xp_mask, pcontext), (I,D,ID.Imask,ID.Dmask), agenda)
+    attend_pr = model.config["attend_pr"]
+    B = length(first(unbatched))
+    if attend_pr == 0
+        I     = fill!(similar(I,size(I,1),B,1),0)
+        D     = fill!(similar(I),0)
+        Imask = falses(B,1)
+        Dmask = falses(B,1)
+    else
+        I = dropout(I, 1-model.config["attend_pr"])
+        D = dropout(D, 1-model.config["attend_pr"])
+        Imask = ID.Imask
+        Dmask = ID.Dmask
+    end
+    y, preds = decode(model, xmasked, (xp_mask, pcontext), (I,D,Imask,Dmask), agenda)
     nllmask(y,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=average) ./ length(first(unbatched))
 end
 
@@ -1080,11 +1092,16 @@ function sample(model::ProtoVAE2, data; N=nothing, sampler=sample, prior=true, s
         if (d = getbatch_proto(dt,b)) !== nothing
             xmasked, x_mask, xp_packed, xp_mask, ID, copymask, unbatched = d
             b = length(first(unbatched))
-            if sanitize
-                ID = (I=ones(Int,b,1), D=ones(Int,b,1), Imask = falses(b,1), Dmask = falses(b,1))
-            end
             agenda, pcontext, z, I, D  = encode(model, xp_packed, ID; prior=prior)
-            y,preds = decode(model, xmasked, (xp_mask, pcontext), (I,D,ID.Imask,ID.Dmask), agenda; sampler=sampler, training=false)
+            if sanitize
+                I     = fill!(similar(I,size(I,1),b,1),0)
+                D     = fill!(similar(I),0)
+                Imask = falses(b,1)
+                Dmask = falses(b,1)
+            else
+                I,D,Imask,Dmask = ID
+            end
+            y,preds = decode(model, xmasked, (xp_mask, pcontext), (I,D,Imask,Dmask), agenda; sampler=sampler, training=false)
             s       = mapslices(x->trim(x,vocab), preds, dims=2)
             for i=1:b
                 push!(samples, (target  = join(vocab.tokens[unbatched[1][i]],' '),
