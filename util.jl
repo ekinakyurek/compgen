@@ -36,19 +36,11 @@ function randchoice(v,num,L)
     end
 end
 
-function inserts_deletes(w2::Vector{T},w1::Vector{T}) where T
-    D = T[]
-    I = T[]
-    for c1 in w1
-        if c1 ∉ w2
-            push!(D,c1)
-        end
-    end
-    for c2 in w2
-        if c2 ∉ w1
-            push!(I,c2)
-        end
-    end
+function inserts_deletes(input::Vector{T},proto::Vector{T}) where T
+    inp   = Set(input)
+    pro   = Set(proto)
+    I     = collect(setdiff(inp,pro))
+    D     = collect(setdiff(pro,inp))
     return (I=I, D=D)
 end
 
@@ -210,40 +202,57 @@ function freebits(x, fb=4.0)
     (x .* mask) ./ (mask .+ 1e-20)
 end
 
+# struct Pw{T<:AbstractFloat}
+#     p::T; K::T; a::T; b::T; d::T; beta
+# end
+
 struct Pw{T<:AbstractFloat}
-    p::T; K::T; a::T; b::T; d::T; beta
+    p::T; K::T; b::T; x::T; c::T; beta
 end
 
 function Pw{T}(p,K) where T
     dim = p-1
-    a = (dim + 2K + sqrt(4K^2 + dim^2))/4
-    b = (-2K  + sqrt(4K^2 + dim^2))/dim
-    d = 4a*b/(1+b) - dim*log(dim)
+    b   = dim / (sqrt(4K^2 + dim^2) + 2K)
+    x   = (1 - b)/(1 + b)
+    c   = K * x + dim * log(1 - x^2)
     beta = Beta(dim/2, dim/2)
-    return Pw(T(p),T(K),T(a),T(b),T(d),beta)
+    Pw(T(p),T(K),T(b),T(x),T(c),beta)
+    # a = (dim + 2K + sqrt(4K^2 + dim^2))/4
+    # b = (-2K  + sqrt(4K^2 + dim^2))/dim
+    # d = 4a*b/(1+b) - dim*log(dim)
+    # beta = Beta(dim/2, dim/2)
+    # return Pw(T(p),T(K),T(a),T(b),T(d),beta)
 end
 
 function sample(pw::Pw{T}) where T
-    opb = (1+pw.b)
-    omb = (1-pw.b)
+    dim = pw.p-1
     while true
-        β  = rand(pw.beta)
-        xp = (1-opb*β)
-        xn = (1-omb*β)
-        t  = 2*pw.a*pw.b / xn
-        if (pw.p-1)*log(t) - t + pw.d - log(rand()) >= 0
-            return T(xp / xn)
+        z = rand(pw.beta)
+        w = (1 - (1 + pw.b) * z) / (1 - (1 - pw.b) * z)
+        if pw.K * w + dim * log(1 - pw.x * w) - pw.c >= log(rand()) #thresh is dim *(kdiv * (w-x) + log(1-x*w) -log(1-x**2))
+            return w
         end
     end
 end
+    # opb = (1+pw.b)
+    # omb = (1-pw.b)
+    # while true
+    #     β  = rand(pw.beta)
+    #     xp = (1-opb*β)
+    #     xn = (1-omb*β)
+    #     t  = 2*pw.a*pw.b / xn
+    #     if (pw.p-1)*log(t) - t + pw.d - log(rand()) >= 0
+    #         return T(xp / xn)
+    #     end
+    # end
+#end
 
 l2norm(x; dims=1) = sqrt.(sumabs2(x, dims=dims))
 
-function sample_orthonormal_to(μ, μnorm, p)
-    v      = randn!(similar(μ))
-    r      = sum(μ .* v,dims=1) ./ μnorm
-    ortho  = v .-  μ .* r
-    ortho ./ l2norm(ortho)
+function sample_orthonormal_to(μ)
+   v      = randn!(similar(μ))
+   ortho  = v .-  μ .*  sum(μ .* v,dims=1)
+   ortho ./ l2norm(ortho)
 end
 
 add_norm_noise(μnorm, ϵ, max_norm) =
@@ -259,13 +268,11 @@ function sample_vMF(μ, ϵ, max_norm, pw::Pw; prior=false)
     else
         w        = reshape([sample(pw) for i=1:size(μ,2)],1,size(μ,2))
         w        = convert(arrtype,w)
-        μ        = μ .+ 1e-10
+        μ        = μ .+ (Float32(1e-18) * randn!(similar(μ)))
         μnorm    = l2norm(μ)
-        μnoise   = add_norm_noise(μnorm, ϵ, max_norm)
-        v        = sample_orthonormal_to(μ, μnorm, pw.p)
-        scale    = sqrt.(1 .- w.^2)
+        v        = sample_orthonormal_to(μ ./ μnorm) .*  sqrt.(1 .- w.^2)
         μscale   = μ .* w ./ μnorm
-        (v .* scale  + μscale) .* μnoise
+        (v + μscale) .* add_norm_noise(μnorm, ϵ, max_norm)
     end
 end
 
@@ -313,7 +320,6 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     end
     for (w,index) in wordsDict
         if occursin(" ",w)
-            print("he")
             embeddings[:,index] .= sentenceEmb(w, wordVectors)
         else
             if haskey(wordVectors,w)
@@ -323,7 +329,53 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     end
     return embeddings
 end
+load_embed(vocab, config, embeddings::Nothing) =
+    Embed(input=length(vocab),output=config["E"])
 
+load_embed(vocab, config, embeddings::AbstractArray) =
+    Embed(param(convert(arrtype,copy(embeddings))))
+
+
+function expand_hidden(h,B)
+    reshape(h,size(h,1),1,size(h,2)) .+ zeroarray(arrtype, size(h,1),B,size(h,2))
+end
+batch_last(x) = permutedims(x, (1,3,2))
+
+import KnetLayers: load, save
+function save_preprocessed_data(m, data, esets, embeddings)
+    fname = prefix(m.config["task"], m.config) * "_processesed.jld2"
+    save(fname, "data", data, "esets", esets, "tokens", m.vocab.tokens, "inpdict", m.vocab.inpdict, "outdict", m.vocab.outdict, "embeddings", embeddings)
+end
+
+function load_preprocessed_data(config)
+    task = config["task"]
+    d = load(prefix(task, config) * "_processesed.jld2")
+    p = Parser{task}()
+    d["data"], d["esets"], Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
+end
+
+
+# function attend2(x, projX, h, projH, att, mask=nothing; sumout=true, pdrop=0.4)
+#     α, interscore = interact2(projX(x), projH; sumout=sumout, mask=mask) # 1,B,T'
+#     y   = att(mat(sum(α .* h , dims=3), dims=1))
+#     y, α, interscore
+# end
+#
+# function interact2(x, h; sumout=true, mask=nothing)
+#     y    = mat(applymask(sum(x .* h,dims=1),mask,-)) # B,T'
+#     α    = reshape(softmax(y,dims=2),1,size(y)...)   # 1,B,T'
+#     return α,y
+# end
+
+
+
+
+# function getcindex(V,xp,pred)
+#     if pred > V
+#         return xp[pred-V]
+#     end
+#     return pred
+# end
 
 
 # function expmask(y, mask)

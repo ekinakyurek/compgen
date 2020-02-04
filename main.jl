@@ -14,6 +14,7 @@ function get_data_model(config)
     task  = config["task"]
     MT    = config["model"]
     proc  = prefix(task, config) * "_processesed.jld2"
+    @show isfile(proc)
     if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(config)
         m  = MT(vocab, config; embeddings=embeddings)
@@ -108,7 +109,7 @@ yelp_config = Dict(
                "B"=>128,
                "attdim"=>128,
                "concatz"=>true,
-               "optim"=>Adam(lr=0.001, gclip=5.0),
+               "optim"=>Adam(lr=0.001, gclip=6.0),
                "kl_weight"=>0.0,
                "kl_rate"=> 0.05,
                "fb_rate"=>4,
@@ -123,7 +124,7 @@ yelp_config = Dict(
                "pplnum"=>1000,
                "authresh"=>0.1,
                "Nlayers"=>2,
-               "Kappa"=>15,
+               "Kappa"=>25,
                "max_norm"=>10.0,
                "eps"=>1.0,
                "activation"=>ELU,

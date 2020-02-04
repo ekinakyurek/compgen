@@ -30,7 +30,7 @@ defaultpath(dataset::Type{SIGDataSet}) = dir("data","Sigmorphon")
 defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCAN")
 defaultpath(dataset::Type{YelpDataSet}) = dir("data","Yelp")
 
-function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet)) 
+function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet))
     !isdir(path) && LibGit2.clone("https://github.com/sigmorphon/conll2018", path)
     unipath = "data/unimorph"
     if !isdir(unipath)
@@ -272,7 +272,8 @@ function getbatch_proto(iter, B)
     if (b = length(edata)) != 0
         d           = pickprotos(edata)
         x, xp, I ,D = d
-        x = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
+        x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
+        xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
         xp_packed   = _pack_sequence(xp)
         x_mask      = get_mask_sequence(length.(x) .+ 2; makefalse=false)
         xp_mask     = get_mask_sequence(length.(xp); makefalse=true)
