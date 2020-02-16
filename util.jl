@@ -1,8 +1,13 @@
 using KnetLayers, Distributions
 import KnetLayers: Knet, nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
 const parameters = KnetLayers.params
-import Knet.SpecialFunctions: besseli,lgamma
+import Knet.SpecialFunctions: besseli,loggamma
+using ClearStacktrace
 const gpugc   = KnetLayers.gc
+if gpu()<0
+    gpu(0)
+end
+KnetLayers.settype!(KnetArray)
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
 using Printf
@@ -352,6 +357,25 @@ function load_preprocessed_data(config)
     d = load(prefix(task, config) * "_processesed.jld2")
     p = Parser{task}()
     d["data"], d["esets"], Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
+end
+
+function Base.sortperm(A::AbstractMatrix; dims::Integer, rev::Bool = false)
+    P = mapslices(x -> sortperm(x; rev = rev), A, dims = dims)
+    if dims == 1
+        for j = 1:size(P, 2)
+            offset = (j - 1) * size(P, 1)
+            for i = 1:size(P, 1)
+                P[i, j] += offset
+            end
+        end
+    else # if dims == 2
+        for j = 1:size(P, 2)
+            for i = 1:size(P, 1)
+                P[i, j] = (P[i, j] - 1) * size(P, 1) + i
+            end
+        end
+    end
+    return P
 end
 
 

@@ -195,7 +195,7 @@ function Vocabulary(data::Vector, parser::Parser{SCANDataSet})
         end
     end
     tokens = appenddicts(inpdict,outdict)
-    Vocabulary{SCANDataSet, String}(IndexedDict(inpdict), IndexedDict(inpdict), IndexedDict(outdict), parser)
+    Vocabulary{SCANDataSet, String}(IndexedDict(tokens), IndexedDict(inpdict), IndexedDict(outdict), parser)
 end
 
 function Vocabulary(data::Vector, parser::Parser{YelpDataSet})
@@ -209,6 +209,7 @@ function Vocabulary(data::Vector, parser::Parser{YelpDataSet})
         end
     end
     srtdvocab = sort(collect(cntdict), by=x->x[2], rev=true)
+
     inpdict = StrDict()
     for (i,T) in enumerate(specialTokens)
         get!(inpdict,T,i)
@@ -268,22 +269,24 @@ end
 
 function getbatch_proto(iter, B)
     edata   = collect(Iterators.take(iter,B))
-    unk, mask, bow, eow = specialIndicies
+    mask    = specialIndicies.mask
     if (b = length(edata)) != 0
         d           = pickprotos(edata)
         x, xp, I ,D = d
         x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
         xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
-        xp_packed   = _pack_sequence(xp)
+        #xp_packed   = _pack_sequence(xp)
+        xpmasked    = PadSequenceArray(xp, pad=mask)
         x_mask      = get_mask_sequence(length.(x) .+ 2; makefalse=false)
         xp_mask     = get_mask_sequence(length.(xp); makefalse=true)
-        xmasked     = PadSequenceArray(map(xi->[bow;xi;eow], x), pad=mask)
+        xmasked     = PadSequenceArray(map(xi->[specialIndicies.bow;xi;specialIndicies.eow], x), pad=mask)
         Imask       = get_mask_sequence(length.(I); makefalse=false)
         Imasked     = PadSequenceArray(I, pad=mask)
         Dmask       = get_mask_sequence(length.(D); makefalse=false)
         Dmasked     = PadSequenceArray(D, pad=mask)
         copymask    = create_copy_mask(xp, xp_mask, xmasked)
-        return xmasked, x_mask, xp_packed, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask), copymask, d
+        unbatched   = (x, xp, I ,D)
+        return xmasked, x_mask, xpmasked, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask), copymask, unbatched
     end
     return nothing
 end

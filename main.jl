@@ -1,6 +1,7 @@
 include("util.jl")
 include("parser.jl")
 include("models.jl")
+include("recombine.jl")
 
 function limitdev!(sets, limit=1000)
     if length(sets) == 3
@@ -14,6 +15,7 @@ function get_data_model(config)
     task  = config["task"]
     MT    = config["model"]
     proc  = prefix(task, config) * "_processesed.jld2"
+    @show proc
     @show isfile(proc)
     if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(config)
