@@ -28,6 +28,11 @@ function applymask(y, mask, f::Function)
     mask = convert(arrtype,mask)
     broadcast(f, y, mask)
 end
+function applymask2(y, mask, f::Function)
+    mask = convert(arrtype,mask)
+    broadcast(f, y, mask)
+end
+
 applymask(y, mask::Nothing, f::Function) = y
 
 function randchoice(v,num,L)

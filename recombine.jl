@@ -27,49 +27,92 @@ function (m::PositionalAttention)(memory, query; pdrop=0, mask=nothing, batchdim
     if ndims(memory)  == 2 && ndims(query) == 2
         return single_attend(m, memory,query; pdrop=0)
     end
-    tquery  = m.query_transform(query) # [A,N,B]
-
+    tquery  = m.query_transform(query) # [A,T,B]
     pscores = nothing
-
     if !isnothing(positions) && ndims(tquery) == 2
         pscores2D = At_mul_B(m.aij_k(positions), tquery) # A x T' times A x B
         pscores   = reshape(pscores2D, 1, size(pscores2D,1), size(pscores2D,2)) # 1 X T' X B
+    elseif !isnothing(positions) && ndims(tquery) == 3
+        pscores = bmm(m.aij_k(positions), permutedims(tquery, (1,3,2)); transA=true) # T' X A X T times  A X B X T  = T X T' X B
+        pscores = permutedims(pscores, (3,1,2))
     end
 
     if  ndims(tquery) == 2
         tquery = reshape(tquery,m.attdim,1,size(tquery,2))
     end
 
-    if batchdim == 2
-        B       = size(memory,batchdim)
-        memory  = permutedims(memory, (1,3,2))
-        if !isnothing(mask)
-            if size(mask,1) != size(memory,2)
-                 mask = mask'
-            end
-        end
-    end
-
     tkey = m.key_transform(memory) #[A,T',B]
 
     if isnothing(pscores)
-        score = dropout(bmm(tquery,tkey,transA=true),pdrop) ./ sqrt(m.attdim) #[1,T',B]
+        score = dropout(bmm(tquery,tkey,transA=true),pdrop) ./ sqrt(m.attdim) #[T,T',B]
     else
-        score = dropout(bmm(tquery,tkey,transA=true) .+ pscores, pdrop) ./ sqrt(m.attdim) #[1,T',B]
+        score = dropout(bmm(tquery,tkey,transA=true) .+ pscores, pdrop) ./ sqrt(m.attdim) #[T,T',B]
     end
 
     if !isnothing(mask)
         score = applymask(score, mask, +)
     end
-    #memory H,B,T'
-    weights  = softmax(score;dims=2) #[1,T',B]
-    values   = mat(bmm(memory,weights;transB=true)) # [H,B]
-    if !isnothing(pscores)
+    #memory H,T',B
+    weights  = softmax(score;dims=2) #[T,T',B]
+    values   = mat(bmm(memory,weights;transB=true)) # [H,T,B]
+    if !isnothing(pscores) && size(tquery,2) == 1
         pmemory = m.aij_v(positions) # H X T'
         values = pmemory * mat(weights) + mat(values)
+    elseif !isnothing(pscores)
+        pmemory = m.aij_v(positions) # A X T' X T
+        pvalues = bmm(pmemory, permutedims(weights, (3,2,1)); transA=true) #T' X A X T times
+        return values .+ pvalues , score
     end
     return values, mat(score)
 end
+
+function newattention(m::PositionalAttention, memory, query; pdrop=0, mask=nothing, positions=nothing)
+    tquery  = m.query_transform(query) # [A,B,T] or [A,B]
+    pscores = nothing
+    if !isnothing(positions) && ndims(tquery) == 2
+        pscores2D = At_mul_B(m.aij_k(positions), tquery) # T' x A \times A x B
+        pscores   = reshape(pscores2D,size(pscores2D,1), size(pscores2D,2), 1) # T' x B x 1
+    elseif !isnothing(positions) && ndims(tquery) == 3
+        pscores = bmm(m.aij_k(positions), tquery ; transA=true) # T' x A x T \times  A x B x T  = T' x B x T
+    end
+
+    if  ndims(tquery) == 2
+        tquery = reshape(tquery,m.attdim,size(tquery,2), 1) #[A,B,1]
+    end
+
+    tkey = m.key_transform(memory) #[A,B,T']
+    score = batch_last(bmm(batch_last(tkey), batch_last(tquery),transA=true)) #[T',B,T]
+    # T' x B x T
+    if !isnothing(pscores)
+        score += pscores
+    end
+
+    score = dropout(score, pdrop) ./ sqrt(m.attdim)
+
+    if !isnothing(mask)
+        score = applymask2(score, reshape(mask, size(mask)..., 1), +) # size(mask) == [T', B , 1]
+    end
+
+    #memory H,B,T' # weights T' X B X T
+    weights  = softmax(score;dims=1) #[T',B,T]
+    values   = batch_last(bmm(batch_last(memory),batch_last(weights))) # [H,B,T]
+
+    if !isnothing(pscores)
+        if size(tquery,3) == 1
+            pmemory = reshape(m.aij_v(positions), size(memory,1), length(positions), 1) # H X T' x 1
+        else
+            pmemory = m.aij_v(positions) # H X T' X T \times T' X B X T
+        end
+        values = values .+ bmm(pmemory, weights) # H X B X T times
+    end
+
+    if  size(tquery,3) == 1
+        mat(values, dims=1), mat(score,dims=1)
+    else
+        values, score
+    end
+end
+
 
 struct Recombine{Data}
     embed::Embed
@@ -94,7 +137,7 @@ end
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     aij_k = Embed(att_weights(input=2*16+1, output=config["attdim"]))
     aij_v = Embed(param(config["H"],2*16+1,; atype=arrtype))
-    dinput = 2config["H"] + config["E"]  + config["A"]
+    dinput =  config["E"]  + config["A"]
     Recombine{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                 Linear(input=3config["H"], output=config["E"]),
@@ -142,6 +185,7 @@ function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
                 w    = trnwords[j]
                 diff = compare(cw,w,dist)
                 if diff > thresh && diff != 1
+                    # @show "here"
                     push!(neighbours,j)
                     cnt+=1
                     cnt == maxcnt && break
@@ -160,7 +204,7 @@ function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
                     if l != n && l !=i
                         w    = trnwords[l]
                         diff = compare(cw,w,dist)
-                        if diff > 0.5
+                        if diff > 0.25 # 0.5
                             push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
                             cnt+=1
                             cnt == 3 && break
@@ -232,8 +276,10 @@ function sumprobs(output, xp::AbstractMatrix{Int}, xpp::AbstractMatrix{Int})
     return log.(y)
 end
 
-function position_calc(L, step, K)
-    (map(x->abs(x) > K ? sign(x) * K : x,collect(0:L-1).-(step-1)) .+ K) .+ 1
+clip_index(x; K=16) = max(-K, min(K, x)) + K + 1
+
+function position_calc(L, step; K=16)
+    clip_index.(collect(1:L) .- step; K=K)
 end
 
 function beam_search(model::Recombine, traces, contexts, masks, z, protos; step=1)
@@ -241,7 +287,7 @@ function beam_search(model::Recombine, traces, contexts, masks, z, protos; step=
     bw = model.config["beam_width"]
     for i=1:length(traces)
         probs, attentions, states, preds, cinput = traces[i]
-        positions = map(p->position_calc(size(p,2), step, 16), protos)
+        positions = map(p->position_calc(size(p,2), step), protos)
         y, attentions, scores, states      = decode_onestep(model, attentions, states, contexts, masks, z, cinput, positions)
         if step == 1
             y[1:5,:]  .= -1.0f18
@@ -250,7 +296,7 @@ function beam_search(model::Recombine, traces, contexts, masks, z, protos; step=
         end
         yp                                 = cat_copy_scores(model, y, scores)
         output                             = convert(Array, softmax(yp,dims=1))
-        #output                             = sumprobs(output, protos[1], protos[2])
+        output                             = sumprobs(output, protos[1], protos[2])
         srtinds                            = mapslices(x->sortperm(x; rev=true), output,dims=1)[1:bw,:]
         cprobs                             = sort(output; rev=true, dims=1)[1:bw,:]
         inputs                             = srtinds
@@ -279,8 +325,8 @@ function beam_search(model::Recombine, traces, contexts, masks, z, protos; step=
         else
             old_preds  = vcat((result_traces[trace+1][4][bi:bi,:] for (bi, (trace, _)) in enumerate(inds))...)
         end
-        old_preds[:,step] .= realindex(model, protos[1], protos[2], inputs)
-        #old_preds[:,step] .= inputs
+        #old_preds[:,step] .= realindex(model, protos[1], protos[2], inputs)
+        old_preds[:,step] .= inputs
         push!(new_traces, (probs,attentions,states,old_preds,old_preds[:,step:step]))
     end
     return new_traces
@@ -299,7 +345,7 @@ function decode(model::Recombine, x, xp, xpp, z, protos; sampler=sample, trainin
     preds      = ones(Int, B, limit)
     outputs    = []
     for i=1:limit
-         positions = map(p->position_calc(size(p,2), i, 16), protos)
+         positions = map(p->position_calc(size(p,2), i), protos)
          y, attentions, scores, states = decode_onestep(model, attentions, states, contexts, masks, z, input, positions)
          if !training
              if i == 1
@@ -321,14 +367,34 @@ function decode(model::Recombine, x, xp, xpp, z, protos; sampler=sample, trainin
     return reshape(cat1d(outputs...),V+Tp,B,limit), preds
 end
 
+function decode_train(model::Recombine, x, xp, xpp, z, protos)
+    T,B                 = eltype(arrtype), size(z,2)
+    H,V,E               = model.config["H"], length(model.vocab.tokens), model.config["E"]
+    contexts            = (xp.context,xpp.context)
+    masks               = (arrtype(xp.mask'*T(-1e18)),  arrtype(xpp.mask'*T(-1e18)))
+    limit               = size(x,2)-1
+    preds               = ones(Int, B, limit)
+    z3d                 = zeroarray(arrtype, 1, 1, limit) .+ reshape(z, (size(z)...,1))
+    xinput              = vcat(model.embed(x[:,1:end-1]), z3d)
+    out                 = model.decoder(xinput, expand_hidden(model.h0,B), expand_hidden(model.c0,B))
+    htop                = vcat(out.y,z3d)
+    positions           = map(p->hcat((position_calc(size(p,2), i) for i=1:limit)...), protos) # T x T'
+    xp_attn, xp_score   = newattention(model.xp_attention, contexts[1],htop;mask=masks[1], pdrop=0.1, positions=positions[1]) #positions[1]
+    xpp_attn, xpp_score = newattention(model.xp_attention, contexts[2],htop;mask=masks[2], pdrop=0.1, positions=positions[2])
+    y                   = model.output(vcat(dropout(out.y, 0.7; drop=true),xp_attn,xpp_attn))
+    yv                  = reshape(At_mul_B(model.embed.weight,mat(y,dims=1)),V,B,limit)
+    output              = cat_copy_scores(model, yv, (xp_score,xpp_score))
+    return output, preds
+end
+
 function decode_onestep(model::Recombine, attentions, states, contexts, masks, z, input, positions)
     pdrop = model.config["pdrop"]
     e                         = mat(model.embed(input),dims=1)
-    xi                        = vcat(e, attentions[1], attentions[2], z)
-    out                       = model.decoder(xi, states[1], states[2]; hy=true, cy=true)
+    xi                        = vcat(e, z)
+    out                       = model.decoder(xi, states[1], states[2])
     h, c                      = out.hidden, out.memory
-    hbottom                   = vcat(h[:,:,1],z)
-    xp_attn, xp_score         = model.xp_attention(contexts[1],hbottom;mask=masks[1], pdrop=0.1, positions=positions[1])
+    hbottom                   = vcat(out.y,z)
+    xp_attn, xp_score         = model.xp_attention(contexts[1],hbottom;mask=masks[1], pdrop=0.1, positions=positions[1]) #positions[1]
     xpp_attn, xpp_score       = model.xp_attention(contexts[2],hbottom;mask=masks[2], pdrop=0.1, positions=positions[2])
     y                         = model.output(vcat(dropout(out.y, 0.7; drop=true),xp_attn,xpp_attn))
     yv                        = At_mul_B(model.embed.weight,y)
@@ -338,7 +404,7 @@ end
 function encode(m::Recombine, x, xp, xpp; prior=false)
     pdrop =  m.config["pdrop"]
     xp_context    = m.xp_encoder(dropout(m.embed(xp.tokens), pdrop)).y
-    xpp_context   = m.xp_encoder(dropout(m.embed(xpp.tokens), pdrop)).y
+    xpp_context   = m.xp_encoder(dropout(m.embed(xpp.tokens),pdrop)).y
     if !m.config["kill_edit"]
         if prior
             μ     = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
@@ -360,7 +426,10 @@ end
 function ind2BT(write_inds, copy_inds, H, BT)
     write_batches  = map(ind->(ind ÷ H) + 1, write_inds .- 1)
     copy_batches   = map(ind->(ind ÷ H) + 1, copy_inds .- 1)
-    ((findall(b->b==i, write_batches), findall(b->b==i, copy_batches)) for i=1:BT)
+    inds = [[write_inds[findall(b->b==i, write_batches)]; copy_inds[findall(b->b==i, copy_batches)]] for i=1:BT]
+    inds_masked = PadSequenceArray(inds, pad=specialIndicies.mask)
+    inds_mask   = get_mask_sequence(length.(inds); makefalse=false)
+    return (tokens=inds_masked, mask=inds_mask, sumind=findall(length.(inds) .> 0))
 end
 
 function getvalues(arr, values)
@@ -371,6 +440,30 @@ function getvalues(arr, values)
     end
 end
 
+function loss(model::Recombine, data; average=false, training=true)
+    x, xp, xpp, copyinds, unbatched = data
+    B = length(first(unbatched))
+    copy_indices  = cat1d(copyinds...)
+    z, xp_context, xpp_context = encode(model, x, xp, xpp; prior=false)
+    Txp  = (mask=xp.mask, context=xp_context)
+    Txpp = (mask=xpp.mask, context=xpp_context)
+    y, _ = decode_train(model, x.tokens, Txp, Txpp, z, (xp.tokens, xpp.tokens))
+    xmask = x.mask[:, 2:end]
+    if training
+        xmask = xmask .* rand(Bool, size(xmask)) .> 0.7
+    end
+    write_indices = findindices(y, (x.tokens[:, 2:end] .* xmask), dims=1)
+    probs = softmax(mat(y, dims=1), dims=1) # H X BT
+    # write_probs = probs[write_indices]
+    # copy_probs  = probs[copy_indices]
+    inds = ind2BT(write_indices, copy_indices, size(probs)...)
+    marginals = log.(sum(probs[inds.tokens] .* arrtype(inds.mask),dims=2) .+ 1e-12)
+    -sum(marginals[inds.sumind]) / B
+
+    #-sum((log(write_probs[first(w)] + getvalues(copy_probs,c)) for (w,c) in ind2bt if !isempty(w))) / B
+end
+
+
 # function loss(model::Recombine, data; average=false)
 #     x, xp, xpp, copyinds, unbatched = data
 #     B = length(first(unbatched))
@@ -378,28 +471,11 @@ end
 #     z, xp_context, xpp_context = encode(model, x, xp, xpp; prior=false)
 #     Txp  = (mask=xp.mask, context=xp_context)
 #     Txpp = (mask=xpp.mask, context=xpp_context)
-#     y, _ = decode(model, x.tokens, Txp, Txpp, z, (xp.tokens, xpp.tokens))
+#     y, _ = decode_train(model, x.tokens, Txp, Txpp, z, (xp.tokens, xpp.tokens))
 #     write_indices = findindices(y, (x.tokens[:, 2:end] .* x.mask[:, 2:end]), dims=1)
-#     probs = softmax(mat(y, dims=1), dims=1, algo=1)
-#     write_probs = probs[write_indices]
-#     copy_probs  = probs[copy_indices]
-#     ind2bt = ind2BT(write_indices, copy_indices, size(probs)...)
-#     -sum((log(write_probs[first(w)] + getvalues(copy_probs,c)) for (w,c) in ind2bt if !isempty(w))) / B
+#     nlly = logp(mat(y, dims=1), dims=1)
+#     -sum(nlly[[write_indices;copy_indices]])/B
 # end
-
-
-function loss(model::Recombine, data; average=false)
-    x, xp, xpp, copyinds, unbatched = data
-    B = length(first(unbatched))
-    copy_indices  = cat1d(copyinds...)
-    z, xp_context, xpp_context = encode(model, x, xp, xpp; prior=false)
-    Txp  = (mask=xp.mask, context=xp_context)
-    Txpp = (mask=xpp.mask, context=xpp_context)
-    y, _ = decode(model, x.tokens, Txp, Txpp, z, (xp.tokens, xpp.tokens))
-    write_indices = findindices(y, (x.tokens[:, 2:end] .* x.mask[:, 2:end]), dims=1)
-    nlly = logp(mat(y, dims=1), dims=1)
-    -sum(nlly[[write_indices;copy_indices]])/B
-end
 
 function copy_indices(xp, xmasked, L::Integer, offset::Integer=0)
     indices = Int[]
@@ -425,7 +501,7 @@ function sample(model::Recombine, data; N=nothing, sampler=sample, prior=true, s
     dt = Iterators.Stateful(shuffle(data))
     vocab = model.vocab
     samples = []
-    for i = 1 : (N ÷ B) + 1
+    for i in  progress(1 : (N ÷ B) + 1)
         b =  min(N,B)
         if (d = getbatch_recombine(model, dt,b)) !== nothing
             x, xp, xpp, copymasks, unbatched = d
@@ -437,17 +513,20 @@ function sample(model::Recombine, data; N=nothing, sampler=sample, prior=true, s
                 preds, probs   = beam_decode(model, x.tokens, Txp, Txpp, z, (xp.tokens,xpp.tokens))
                 probs2D = softmax(hcat(probs...), dims=2)
                 s       = hcat(map(pred->vec(mapslices(x->trim(x,vocab), pred, dims=2)), preds)...)
-                s       = mapslices(s->join(s,'\n'),s,dims=2)
+                s       = mapslices(x->join(x,'\n'),s,dims=2)
+                interesting = map(x->occursin("jump",x) || occursin("I_JUMP",x) , s)
             else
                 y, preds   = decode(model, x.tokens, Txp, Txpp, z, (xp.tokens,xpp.tokens); sampler=sampler, training=false)
                 s          = mapslices(x->trim(x,vocab), preds, dims=2)
             end
             for i=1:b
-                push!(samples, (target  = join(vocab.tokens[unbatched[1][i]],' '),
-                                xp      = join(vocab.tokens[unbatched[2][i]],' '),
-                                xpp     = join(vocab.tokens[unbatched[3][i]],' '),
-                                sample  = s[i],
-                                probs   = probs2D[i,:] ))
+            #    if interesting[i]
+                    push!(samples, (target  = join(vocab.tokens[unbatched[1][i]],' '),
+                                    xp      = join(vocab.tokens[unbatched[2][i]],' '),
+                                    xpp     = join(vocab.tokens[unbatched[3][i]],' '),
+                                    sample  = s[i],
+                                    probs   = probs2D[i,:] ))
+            #    end
             end
         end
     end
@@ -509,12 +588,12 @@ function train!(model::Recombine, data; eval=false, dev=nothing)
                     end
                 end
             else
-                J = loss(model, d; average=false)
+                J = loss(model, d; average=false, training=false)
             end
             lss        += (value(J)*b)
             ntokens    += n
             ninstances += b
-            if !eval && i%100==0
+            if !eval && i%500==0
                 print_ex_samples(model, data; beam=true)
                 if !isnothing(dev)
                     print_ex_samples(model, dev; beam=true)
@@ -567,14 +646,14 @@ recombine_config = Dict(
                "B"=>16,
                "attdim"=>32,
                "concatz"=>true,
-               "optim"=>Adam(lr=0.001, gclip=10.0),
+               "optim"=>Adam(lr=0.001, gclip=5.0),
                "kl_weight"=>0.0,
                "kl_rate"=> 0.05,
                "fb_rate"=>4,
                "N"=>10000,
                "useprior"=>true,
                "aepoch"=>1, #20
-               "epoch"=>10,  #40
+               "epoch"=>1,  #40
                "Ninter"=>10,
                "pdrop"=>0.5,
                "calctrainppl"=>false,
@@ -592,7 +671,7 @@ recombine_config = Dict(
                "dist_thresh"=>0.5,
                "max_cnt_nb"=>10,
                "task"=>SCANDataSet,
-               "patiance"=>10,
+               "patiance"=>3,
                "lrdecay"=>0.5,
                "conditional" => true,
                "split" => "add_prim",
@@ -606,4 +685,37 @@ function vmfKL(m::Recombine)
    k*((besseli(d/2.0+1.0,k) + besseli(d/2.0,k)*d/(2.0*k))/besseli(d/2.0, k) - d/(2.0*k)) +
    d * log(k)/2.0 - log(besseli(d/2.0,k)) -
    loggamma(d/2+1) - d * log(2)/2
+end
+
+function pickprotos(model, eset)
+    set = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
+    set = unique(set)
+    data = []
+    for i=1:length(set)
+        for j=1:length(set)
+            j==i && continue
+            if length(set[j]) < 5
+                push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+            end
+        end
+    end
+    data
+end
+
+function print_samples(model, data2aug; beam=true, fname="samples.txt", N=1000)
+    # set = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
+    # data = []
+    # for i=1:length(set)
+    #     for j=1:length(set)
+    #         j==i && continue
+    #         push!(data, (x=Int[2], xp=set[i], xpp=set[j]))
+    #     end
+    # end
+    open(fname, "w+") do f
+        for s in sample(model, data; N=N, sampler=argmax, prior=true, beam=beam)
+            if s.probs[1] > 0.3
+                println(f, "IN: ", replace(split(s.sample,'\n')[1]," →"=> "\tOUT:"))
+            end
+        end
+    end
 end

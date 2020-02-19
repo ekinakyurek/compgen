@@ -177,7 +177,7 @@ function Vocabulary(data::Vector, parser::Parser{SIGDataSet})
         end
     end
     tokens = appenddicts(inpdict,outdict)
-    Vocabulary{SIGDataSet, String}(IndexedDict(outdict), IndexedDict(inpdict), IndexedDict(outdict), parser)
+    Vocabulary{SIGDataSet, String}(IndexedDict(tokens), IndexedDict(inpdict), IndexedDict(outdict), parser)
 end
 
 function Vocabulary(data::Vector, parser::Parser{SCANDataSet})
