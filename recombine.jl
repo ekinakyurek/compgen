@@ -688,21 +688,22 @@ function vmfKL(m::Recombine)
 end
 
 function pickprotos(model, eset)
-    set = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
-    set = unique(set)
+    set    = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
+    set    = unique(set)
+    inputs = Set(map(d->join(model.vocab.tokens[d[1:findfirst(s->s==specialIndicies.sep,d)-1]],' '), set))
     data = []
     for i=1:length(set)
         for j=1:length(set)
             j==i && continue
-            if length(set[j]) < 5
+            if length(set[j]) < 8
                 push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
             end
         end
     end
-    data
+    data, inputs
 end
 
-function print_samples(model, data2aug; beam=true, fname="samples.txt", N=1000)
+function print_samples(model, data, exist_inputs; beam=true, fname="samples.txt", N=5000)
     # set = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
     # data = []
     # for i=1:length(set)
@@ -713,9 +714,15 @@ function print_samples(model, data2aug; beam=true, fname="samples.txt", N=1000)
     # end
     open(fname, "w+") do f
         for s in sample(model, data; N=N, sampler=argmax, prior=true, beam=beam)
-            if s.probs[1] > 0.3
-                println(f, "IN: ", replace(split(s.sample,'\n')[1]," →"=> "\tOUT:"))
-            end
+            # if s.probs[1] > 0.3
+                datapoint = split(s.sample,'\n')[1]
+                seploc    = findfirst("→", datapoint)
+                if !isnothing(seploc)
+                    if datapoint[1:first(seploc)-2] ∉ exist_inputs
+                        println(f, "IN: ", replace(split(s.sample,'\n')[1]," →"=> "\tOUT:"))
+                    end
+                end
+            # end
         end
     end
 end
