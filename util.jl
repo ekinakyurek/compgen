@@ -1,13 +1,13 @@
+using Knet
+if gpu()<0
+    gpu(0)
+end
 using KnetLayers, Distributions
 import KnetLayers: Knet, nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
 const parameters = KnetLayers.params
 import Knet.SpecialFunctions: besseli,loggamma
 using ClearStacktrace
 const gpugc   = KnetLayers.gc
-if gpu()<0
-    gpu(0)
-end
-KnetLayers.settype!(KnetArray)
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
 using Printf
@@ -286,20 +286,21 @@ function sample_vMF(μ, ϵ, max_norm, pw::Pw; prior=false)
     end
 end
 
-function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0) where T<:Integer
+function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0, makefalse=true) where T<:Integer
     B      = length(batch)
     lngths = length.(batch)
     Tmax   = maximum(lngths)
     padded = Array{T}(undef,B,Tmax)
     if Tmax == 0
-        return pad * ones(T,B,1)
+        return pad * ones(T,B,1), makefalse .& trues(B,1)
     else
         padded = Array{T}(undef,B,Tmax)
         @inbounds for n = 1:B
             padded[n,1:lngths[n]] = batch[n]
             padded[n,lngths[n]+1:end] .= pad
         end
-        return padded
+
+        return padded, !makefalse .⊻ (padded .== pad)
     end
 end
 

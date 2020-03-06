@@ -2,8 +2,8 @@ using LibGit2, Random, KnetLayers, StringDistances
 import KnetLayers: IndexedDict, _pack_sequence
 abstract type AbstractVAE{T} end
 
-const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬", sep="→")
-const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5)
+const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬", sep="→", iosep="#")
+const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5, iosep=6)
 
 """
     DataSet
@@ -70,7 +70,7 @@ end
 prefix(dataset::Type{SCANDataSet}, opt) =
     joinpath(defaultpath(SCANDataSet), string(opt["model"],"_",opt["task"],"_",opt["split"],"_condition_",opt["conditional"]))
 prefix(dataset::Type{SIGDataSet}, opt) =
-    joinpath(defaultpath(SIGDataSet), string(opt["model"],"_",opt["task"],"_",opt["lang"],"_condition_",opt["conditional"]))
+    joinpath(defaultpath(SIGDataSet), string(opt["model"],"_",opt["task"],"_",opt["lang"],"_condition_",opt["conditional"],"_",opt["split"]))
 prefix(dataset::Type{YelpDataSet}, opt) =
     joinpath(defaultpath(YelpDataSet), string(opt["model"], "_", opt["task"]))
 
@@ -84,7 +84,8 @@ end
 function rawfiles(dataset::Type{SIGDataSet}, config)
     lang = config["lang"]
     th   = lang[1:3]
-    ["data/Sigmorphon/task1/all/$(lang)-train-high",
+    split = config["split"]
+    ["data/Sigmorphon/task1/all/$(lang)-train-$(split)",
      "data/Sigmorphon/task1/all/$(lang)-test",
      "data/unimorph/$(th)/$(th)"
     ]
@@ -228,7 +229,10 @@ function Vocabulary(data::Vector, parser::Parser{YelpDataSet})
 end
 
 
-xfield(::Type{SIGDataSet},  x, cond::Bool=true) = cond ? [x.lemma;x.tags;[specialIndicies.sep];x.surface] : x.surface
+function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false)
+    tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
+    cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : x.surface
+end
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
 xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
 

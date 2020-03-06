@@ -1,4 +1,12 @@
-for i in 0 1 2 3 4 5 6 7
-do
-  CUDA_VISIBLE_DEVICES=$i sh runsinglegpu.sh $i > $i.txt 2>&1 &
-done
+#!/bin/sh
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:volta:1
+#SBATCH --qos=high
+#SBATCH --time=30:00:00
+#SBATCH --cpus-per-task=5
+#SBATCH --constraint=xeon-g6
+#SBATCH --job-name="scan"
+#SBATCH --output=scan.out
+#SBATCH --error=scan.error
+#SBATCH -a 1-8
+./runsinglegpu.sh

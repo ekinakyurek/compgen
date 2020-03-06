@@ -30,6 +30,9 @@ function get_data_model(config)
         if task == YelpDataSet
             embeddings = initializeWordEmbeddings(300; wordsDict=v.tokens.toIndex)
             m     = MT(v, config; embeddings=embeddings)
+        # elseif task==SCANDataSet
+        #     embeddings = initializeWordEmbeddings(100; wordsDict=v.tokens.toIndex)
+        #     m     = MT(v, config; embeddings=embeddings)
         else
             embeddings = nothing
             m     = MT(v, config)
@@ -98,50 +101,87 @@ function printsamples(fname,words)
     end
 end
 
+function main_simple(config)
+    println("Preprocessing Data & Initializing Model")
+    processed, esets, model = get_data_model(config)
+    println("Train Starts")
+    train!(model, processed[1]; dev=processed[end])
+end
 
-yelp_config = Dict(
-               "model"=> ProtoVAE,
-               "lang"=>"turkish",
-               "kill_edit"=>false,
-               "attend_pr"=>0,
-               "A"=>256,
-               "H"=>256,
-               "Z"=>64,
-               "E"=>300,
-               "B"=>128,
-               "attdim"=>128,
-               "concatz"=>true,
-               "optim"=>Adam(lr=0.001, gclip=6.0),
-               "kl_weight"=>0.0,
-               "kl_rate"=> 0.05,
-               "fb_rate"=>4,
-               "N"=>10000,
-               "useprior"=>true,
-               "aepoch"=>1, #20
-               "epoch"=>8,  #40
-               "Ninter"=>10,
-               "pdrop"=>0.4,
-               "calctrainppl"=>false,
-               "Nsamples"=>100,
-               "pplnum"=>1000,
-               "authresh"=>0.1,
-               "Nlayers"=>2,
-               "Kappa"=>25,
-               "max_norm"=>10.0,
-               "eps"=>1.0,
-               "activation"=>ELU,
-               "maxLength"=>25,
-               "calc_trainppl"=>false,
-               "num_examplers"=>2,
-               "dist_thresh"=>0.5,
-               "max_cnt_nb"=>10,
-               "task"=>YelpDataSet,
-               "patiance"=>6,
-               "lrdecay"=>0.5,
-               "conditional" => false,
-               "split" => "simple",
-               "splitmodifier" => "right"
-               )
+function get_experiments_simple()
+    E          = [32, 64, 128]
+    Z          = [8, 16, 32, 64]
+    LR         = [0.0005, 0.001, 0.002]
+    Kappa      = [15, 25]
+    maxnorm    = [5.0, 10.0]
+    writedrop  = [0.3, 0.5, 0.7]
+    H          = [256, 512]
+    positional = [true, false]
+    gclip      = [5.0, 10.0]
+    exps = vec(collect(Iterators.product(H,E,Z,LR,Kappa,maxnorm, writedrop, positional, gclip)))
+end
+#
+# function run_experiments_simple(baseconfig)
+#     f = open("resultr.csv","w+")
+#     println(f,"H,E,Z,LR,Kappa,maxnorm,writedrop,positional,gclip,ppl")
+#     close(f)
+#     exps = get_experiments_simple()
+#     for (i,exp) in enumerate(reverse(exps))
+#         o = copy(baseconfig)
+#         o["H"], o["E"], o["Z"], lr , o["Kappa"], o["writedrop"], o["positions"], gclip  = exp
+#         o["A"] = 2o["Z"]
+#         o["optim"] = Adam(lr=lr, gclip=gclip)
+#         ppl = main_simple(o)
+#         f = open("resultr.csv","a+")
+#         println(f,(exp..., ppl))
+#         close(f)
+#     end
+# end
+
+#
+# yelp_config = Dict(
+#                "model"=> ProtoVAE,
+#                "lang"=>"turkish",
+#                "kill_edit"=>false,
+#                "attend_pr"=>0,
+#                "A"=>256,
+#                "H"=>256,
+#                "Z"=>64,
+#                "E"=>300,
+#                "B"=>128,
+#                "attdim"=>128,
+#                "concatz"=>true,
+#                "optim"=>Adam(lr=0.001, gclip=6.0),
+#                "kl_weight"=>0.0,
+#                "kl_rate"=> 0.05,
+#                "fb_rate"=>4,
+#                "N"=>10000,
+#                "useprior"=>true,
+#                "aepoch"=>1, #20
+#                "epoch"=>8,  #40
+#                "Ninter"=>10,
+#                "pdrop"=>0.4,
+#                "calctrainppl"=>false,
+#                "Nsamples"=>100,
+#                "pplnum"=>1000,
+#                "authresh"=>0.1,
+#                "Nlayers"=>2,
+#                "Kappa"=>25,
+#                "max_norm"=>10.0,
+#                "eps"=>1.0,
+#                "activation"=>ELU,
+#                "maxLength"=>25,
+#                "calc_trainppl"=>false,
+#                "num_examplers"=>2,
+#                "dist_thresh"=>0.5,
+#                "max_cnt_nb"=>10,
+#                "task"=>YelpDataSet,
+#                "patiance"=>4,
+#                "lrdecay"=>0.5,
+#                "conditional" => false,
+#                "split" => "simple",
+#                "splitmodifier" => "right"
+#                )
 
 #
 # default_config = Dict(
