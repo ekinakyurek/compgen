@@ -40,28 +40,23 @@ function get_data_model(config)
         processed  = preprocess(m, esets...)
         save_preprocessed_data(m, processed, esets, embeddings)
     end
+    if length(processed) == 2
+        trn, dev = splitdata(processed[1],[0.8,0.2])
+        processed = [trn,processed[2],dev]
+    end
     return processed, esets, m
 end
 
 function main(config)
     println("Preprocessing Data & Initializing Model")
+    exp_time = Dates.format(Dates.now(), "mm-dd_HH.MM")
     processed, esets, model = get_data_model(config)
-    vocab = model.vocab
-    task, cond = config["task"], config["conditional"]
-    words = [Set(map(s->join(vocab.tokens[xfield(task,s,cond)],' '),set)) for set in esets]
-    @show rand(words[1])
+    task, cond, vocab =  config["task"], config["conditional"], model.vocab
+    #words = [Set(map(s->join(vocab.tokens[xfield(task,s,cond)],' '),set)) for set in esets]
+    println("example: ",map(x->vocab.tokens[x],rand(processed[1])))
     train!(model, processed[1]; dev=processed[end])
     samples = sample(model,processed[2])
-    existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
-                     tstsamples  = samples[findall(s->in(s,words[2]), samples)],
-                     dictsamples = samples[findall(s->in(s,words[end]), samples)])
 
-    nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
-                                           !in(s, words[2]) &&
-                                           !in(s, words[end])), samples)]
-
-    println("Generating Interpolation Examples")
-    interex  = sampleinter(model, processed[1])
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
     mi       = calc_mi(model, processed[2])
@@ -74,8 +69,41 @@ function main(config)
     end
     println("Calculating dict ppl")
     dictppl = calc_ppl(model, processed[end])
-    println("--DONE--")
-    return (existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
+    existsamples, interex = [],[]
+    saveprefix = string("checkpoints/",task,"/",exp_time)
+    samplefile = saveprefix*"_samples.txt"
+    println("generating and printing samples")
+    nonexistsamples = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"])
+    ex_test_data    = [map(field->vocab.tokens[field],d) for d in rand(processed[1],10)]
+    result = (model=model, ex_test_data=ex_test_data, existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
+    println("saving the model and samples")
+    KnetLayers.save(saveprefix * "_results.jld2", result)
+    if task == SCANDataSet
+        println("converting samples to json for downstream task")
+        jfile = to_json(model, samplefile)
+        println("copying samples to downstream location")
+        for i=0:9
+            cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
+        end
+    elseif task == SIGDataSet
+        files = rawfiles(task, config)
+        lang, split = config["lang"], config["split"]
+        datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
+        write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
+        write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
+    end
+
+    # existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
+    #                  tstsamples  = samples[findall(s->in(s,words[2]), samples)],
+    #                  dictsamples = samples[findall(s->in(s,words[end]), samples)])
+    #
+    # nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
+    #                                        !in(s, words[2]) &&
+    #                                        !in(s, words[end])), samples)]
+    #
+    # println("Generating Interpolation Examples")
+    # interex  = sampleinter(model, processed[1])
+    return result
 end
 
 function printlatent(fname, model, data, vocab; B=16)
@@ -138,50 +166,50 @@ end
 #     end
 # end
 
-#
-# yelp_config = Dict(
-#                "model"=> ProtoVAE,
-#                "lang"=>"turkish",
-#                "kill_edit"=>false,
-#                "attend_pr"=>0,
-#                "A"=>256,
-#                "H"=>256,
-#                "Z"=>64,
-#                "E"=>300,
-#                "B"=>128,
-#                "attdim"=>128,
-#                "concatz"=>true,
-#                "optim"=>Adam(lr=0.001, gclip=6.0),
-#                "kl_weight"=>0.0,
-#                "kl_rate"=> 0.05,
-#                "fb_rate"=>4,
-#                "N"=>10000,
-#                "useprior"=>true,
-#                "aepoch"=>1, #20
-#                "epoch"=>8,  #40
-#                "Ninter"=>10,
-#                "pdrop"=>0.4,
-#                "calctrainppl"=>false,
-#                "Nsamples"=>100,
-#                "pplnum"=>1000,
-#                "authresh"=>0.1,
-#                "Nlayers"=>2,
-#                "Kappa"=>25,
-#                "max_norm"=>10.0,
-#                "eps"=>1.0,
-#                "activation"=>ELU,
-#                "maxLength"=>25,
-#                "calc_trainppl"=>false,
-#                "num_examplers"=>2,
-#                "dist_thresh"=>0.5,
-#                "max_cnt_nb"=>10,
-#                "task"=>YelpDataSet,
-#                "patiance"=>4,
-#                "lrdecay"=>0.5,
-#                "conditional" => false,
-#                "split" => "simple",
-#                "splitmodifier" => "right"
-#                )
+
+yelp_config = Dict(
+               "model"=> ProtoVAE,
+               "lang"=>"turkish",
+               "kill_edit"=>false,
+               "attend_pr"=>0,
+               "A"=>256,
+               "H"=>256,
+               "Z"=>64,
+               "E"=>300,
+               "B"=>128,
+               "attdim"=>128,
+               "concatz"=>true,
+               "optim"=>Adam(lr=0.001),
+               "kl_weight"=>0.0,
+               "kl_rate"=> 0.05,
+               "fb_rate"=>4,
+               "N"=>10000,
+               "useprior"=>true,
+               "aepoch"=>1, #20
+               "epoch"=>8,  #40
+               "Ninter"=>10,
+               "pdrop"=>0.4,
+               "calctrainppl"=>false,
+               "Nsamples"=>100,
+               "pplnum"=>1000,
+               "authresh"=>0.1,
+               "Nlayers"=>3,
+               "Kappa"=>25,
+               "max_norm"=>10.0,
+               "eps"=>1.0,
+               "activation"=>ELU,
+               "maxLength"=>25,
+               "calc_trainppl"=>false,
+               "num_examplers"=>2,
+               "dist_thresh"=>0.5,
+               "max_cnt_nb"=>10,
+               "task"=>YelpDataSet,
+               "patiance"=>4,
+               "lrdecay"=>0.5,
+               "conditional" => false,
+               "split" => "simple",
+               "splitmodifier" => "right"
+               )
 
 #
 # default_config = Dict(

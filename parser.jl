@@ -1,4 +1,4 @@
-using LibGit2, Random, KnetLayers, StringDistances
+ using LibGit2, Random, KnetLayers, StringDistances
 import KnetLayers: IndexedDict, _pack_sequence
 abstract type AbstractVAE{T} end
 
@@ -20,6 +20,7 @@ struct Parser{MyDataSet}
     tagsSeperator::Union{Char,Nothing}
     freewords::Union{Set{String},Nothing}
 end
+
 
 Parser{SIGDataSet}(version=:default)  = Parser{SIGDataSet}(nothing,'\t',';', nothing)
 Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\: (.*?)$",' ',nothing, nothing)
@@ -86,8 +87,7 @@ function rawfiles(dataset::Type{SIGDataSet}, config)
     th   = lang[1:3]
     split = config["split"]
     ["data/Sigmorphon/task1/all/$(lang)-train-$(split)",
-     "data/Sigmorphon/task1/all/$(lang)-test",
-     "data/unimorph/$(th)/$(th)"
+     "data/Sigmorphon/task1/all/$(lang)-test"
     ]
 end
 
@@ -125,12 +125,12 @@ end
 
 function parseDataLine(line::AbstractString, parser::Parser{YelpDataSet})
     #input, proto = split(replace(lowercase(line), r"[^\w\s]"=>s""),"\t")
-    input, proto = split(lowercase(strip(line)), '\t')
+    proto, input = split(lowercase(strip(line)), '\t')
     return (input=filter(!isempty,split(input,' ')), proto=filter(!isempty,split(proto,' ')))
 end
 
 function parseDataFile(f::AbstractString, parser::Parser)
-    [parseDataLine(l,parser) for l in eachline(f) if l != ""]
+    [parseDataLine(l,parser) for l in progress(eachline(f)) if l != ""]
 end
 
 function EncodedFormat(a::NamedTuple, v::Vocabulary{SIGDataSet})
@@ -260,39 +260,42 @@ function pickprotos(edata)
         I,D       = unzip(ID)
         #xp = x  # uncomment  if you want to debug with copying. config["kill_edit"] = true
         r         = sortperm(xp, by=length, rev=true)
-        x[r], xp[r], I[r], D[r]
+        x[r], xp[r], I[r], D[r], sortperm(r)
     else
         inds = map(l->rand(1:l),length.(xp))
         xp   = map(d->d[1][d[2]],zip(xp,inds))
         ID   = map(d->d[1][d[2]],zip(ID,inds))
         I,D  = unzip(ID)
         r    = sortperm(xp, by=length, rev=true)
-        x[r], xp[r], I[r], D[r]
+        x[r], xp[r], I[r], D[r], sortperm(r)
     end
 end
 
-function getbatch_proto(iter, B)
+function getbatch_proto(model, iter, B)
     edata   = collect(Iterators.take(iter,B))
-    mask    = specialIndicies.mask
-    if (b = length(edata)) != 0
-        d           = pickprotos(edata)
-        x, xp, I ,D = d
-        x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
-        xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
-        #xp_packed   = _pack_sequence(xp)
-        xpmasked    = PadSequenceArray(xp, pad=mask)
-        x_mask      = get_mask_sequence(length.(x) .+ 2; makefalse=false)
-        xp_mask     = get_mask_sequence(length.(xp); makefalse=true)
-        xmasked     = PadSequenceArray(map(xi->[specialIndicies.bow;xi;specialIndicies.eow], x), pad=mask)
-        Imask       = get_mask_sequence(length.(I); makefalse=false)
-        Imasked     = PadSequenceArray(I, pad=mask)
-        Dmask       = get_mask_sequence(length.(D); makefalse=false)
-        Dmasked     = PadSequenceArray(D, pad=mask)
-        copymask    = create_copy_mask(xp, xp_mask, xmasked)
-        unbatched   = (x, xp, I ,D)
-        return xmasked, x_mask, xpmasked, xp_mask, (I=Imasked, D=Dmasked, Imask=Imask, Dmask=Dmask), copymask, unbatched
-    end
-    return nothing
+    b = length(edata); b==0 && return nothing
+    x, xp, I ,D, r =  pickprotos(edata)
+    unk, mask, eow, bow,_,_ = specialIndicies
+    maxL = model.config["maxLength"]
+    xlimited = limit_seq_length(x;maxL=maxL)
+    x  = map(s->[bow;s;eow], xlimited)
+    xp = limit_seq_length(xp;maxL=maxL)
+    #x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
+    #xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
+    #xp_packed   = _pack_sequence(xp)
+    pxp         = PadSequenceArray(xp, pad=mask, makefalse=true)
+    px          = PadSequenceArray(x, pad=mask, makefalse=false)
+    # xpmasked    = PadSequenceArray(xp, pad=mask)
+    # x_mask      = get_mask_sequence(length.(x) .+ 2; makefalse=false)
+    # xp_mask     = get_mask_sequence(length.(xp); makefalse=true)
+    # xmasked     = PadSequenceArray(map(xi->[specialIndicies.bow;xi;specialIndicies.eow], x), pad=mask)
+    #Imask       = get_mask_sequence(length.(I); makefalse=false)
+    pI          = PadSequenceArray(I, pad=mask, makefalse=false)
+    #Dmask       = get_mask_sequence(length.(D); makefalse=false)
+    pD          = PadSequenceArray(D, pad=mask, makefalse=false)
+    copymask    = create_copy_mask(xp, pxp[2], px[1])
+    unbatched   = (x, xp, I ,D)
+    return (px..., pxp..., (I=pI[1], D=pD[1], Imask=pI[2], Dmask=pD[2]), copymask, unbatched,r)
 end
 
 function create_copy_mask(xp, xp_mask, xmasked)
@@ -309,6 +312,16 @@ function create_copy_mask(xp, xp_mask, xmasked)
     return mask
 end
 
+function _ser(x::Vocabulary{T},s::IdDict,::typeof(JLDMODE)) where T
+    if !haskey(s,x)
+        if isa(x.parser.regex,Nothing) && isa(x.parser.partsSeperator,Nothing)
+            s[x] = Vocabulary(x.tokens, x.inpdict, x.outdict, Parser{T}())
+        else
+            s[x] = Vocabulary(x.tokens, x.inpdict, x.outdict,  Parser{T}(ntuple(i->nothing,4)...))    # Leave conversion to array to KnetArray
+        end
+    end
+    return s[x]
+end
 
 #
 #

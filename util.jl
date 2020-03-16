@@ -10,7 +10,7 @@ using ClearStacktrace
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
-using Printf
+using Printf, Dates, JSON
 ###
 #### UTILS
 ###
@@ -21,6 +21,14 @@ const CharDict = Dict{Char,Int}
 CrossDict = Dict{Vector{Int},Vector{Int}}
 ###
 
+function expand(x; dim=1)
+    shape,ND = size(x), ndims(x)
+    if dim <= ND + 1
+        reshape(x, (shape[1:dim-1]...,1, shape[dim:end]...))
+    else
+        reshape(x, (shape...,ntuple(i->1, dim-ND)))
+    end
+end
 function applymask(y, mask, f::Function)
     sy,sm = size(y),size(mask)
     @assert sy[2:end] == sm "input and mask size are different $sy and $sm"
@@ -92,14 +100,15 @@ end
 greedy(y) = mapslices(argmax, y, dims=1)
 
 function trim(chars::Vector{Int},vocab)
-    out = Int[]
-    for c in chars
-        c == specialIndicies.eow && break
-        if c ∉ (specialIndicies.bow,specialIndicies.unk)
-            push!(out,c)
-        end
-    end
-    return join(vocab.tokens[out],' ')
+    join(vocab.tokens[trimencoded(chars)],' ')
+    # out = Int[]
+    # for c in chars
+    #     c == specialIndicies.eow && break
+    #     if c ∉ (specialIndicies.bow,specialIndicies.unk)
+    #         push!(out,c)
+    #     end
+    # end
+    # return join(vocab.tokens[out],' ')
 end
 
 sample(y) = catsample(softmax(y;dims=1))
@@ -286,25 +295,39 @@ function sample_vMF(μ, ϵ, max_norm, pw::Pw; prior=false)
     end
 end
 
-function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0, makefalse=true) where T<:Integer
-    B      = length(batch)
-    lngths = length.(batch)
-    Tmax   = maximum(lngths)
-    padded = Array{T}(undef,B,Tmax)
-    if Tmax == 0
-        return pad * ones(T,B,1), makefalse .& trues(B,1)
-    else
-        padded = Array{T}(undef,B,Tmax)
-        @inbounds for n = 1:B
-            padded[n,1:lngths[n]] = batch[n]
-            padded[n,lngths[n]+1:end] .= pad
-        end
+# function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0, makefalse=true) where T<:Integer
+#     B      = length(batch)
+#     lngths = length.(batch)
+#     Tmax   = maximum(lngths)
+#     padded = Array{T}(undef,B,Tmax)
+#     if Tmax == 0
+#         return (tokens=pad * ones(T,B,1), mask=makefalse .& trues(B,1))
+#     else
+#         padded = Array{T}(undef,B,Tmax)
+#         @inbounds for n = 1:B
+#             padded[n,1:lngths[n]] = batch[n]
+#             padded[n,lngths[n]+1:end] .= pad
+#         end
+#
+#         return (tokens=padded, mask=!makefalse .⊻ (padded .== pad))
+#     end
+# end
 
-        return padded, !makefalse .⊻ (padded .== pad)
+function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0, makefalse=true) where T<:Integer
+    lngths = map(length,batch)
+    Tmax   = maximum(lngths)
+    if Tmax == 0
+        (tokens=pad * ones(T,B,1), mask=makefalse .& trues(B,1))
+    else
+        padded = fill!(Array{T}(undef,length(batch),Tmax),pad)
+        for (n,l) in enumerate(lngths)
+            @inbounds padded[n,1:l] = batch[n]
+        end
+        (tokens=padded, mask=!makefalse .⊻ ( (padded .== pad) .| (padded .== specialIndicies.unk)))
     end
 end
 
-initEmbRandom(embDim,InputDim) =  randn(Float32,embDim,InputDim)
+
 
 function sentenceEmb(sentence, wordVectors, dim)
     words = split(sentence)
@@ -317,9 +340,13 @@ function sentenceEmb(sentence, wordVectors, dim)
     return vec(sum(wordEmbs,dims=2))
 end
 
+function splitdata(data::Vector, r::Vector{<:Real})
+    ls = isa(r[1],AbstractFloat) ? floor.(Int, r .* length(data)) : r #Ratio or Number
+    map(rng->data[rng[1]:rng[2]], zip(cumsum(ls) .- ls .+ 1, cumsum(ls)))
+end
+
 function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove/glove.6B.")
     # default dictionary to use for embeddings
-    embeddings = initEmbRandom(dim,length(wordsDict))
     wordVectors  = Dict()
     open(prefix*string(dim)*"d.txt") do f
         for line in eachline(f)
@@ -329,6 +356,8 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
             wordVectors[word] = vector
         end
     end
+    σ2, μ = std_mean(collect(values(wordVectors)))
+    embeddings = randn(dim,length(wordsDict)) .* sqrt.(σ2) .+ μ
     for (w,index) in wordsDict
         if occursin(" ",w)
             embeddings[:,index] .= sentenceEmb(w, wordVectors)
@@ -340,29 +369,46 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     end
     return embeddings
 end
+
 load_embed(vocab, config, embeddings::Nothing) =
     Embed(input=length(vocab),output=config["E"])
 
 load_embed(vocab, config, embeddings::AbstractArray) =
     Embed(param(convert(arrtype,copy(embeddings))))
 
-
-function expand_hidden(h,B)
-    reshape(h,size(h,1),1,size(h,2)) .+ zeroarray(arrtype, size(h,1),B,size(h,2))
-end
+expand_hidden(h,B) = expand(h,dim=2) .+ zeroarray(arrtype,size(h,1),B,size(h,2))
 batch_last(x) = permutedims(x, (1,3,2))
+
+function _repeat(y, cnt::Int; dim=1)
+    h = expand(y,dim=dim)
+    s = ntuple(i->(i==dim ? cnt : 1),ndims(h))
+    h .+ zeroarray(arrtype,s...)
+end
+function negativemask!(y,inds...)
+    T = eltype(y)
+    for i in inds
+        y[i,:] .= -T(1.0f18)
+    end
+end
+
+function trimencoded(x)
+    stop = findfirst(i->i==specialIndicies.eow,x)
+    stop = isnothing(stop) ? length(x) : stop
+    return x[1:stop-1]
+end
 
 import KnetLayers: load, save
 function save_preprocessed_data(m, data, esets, embeddings)
     fname = prefix(m.config["task"], m.config) * "_processesed.jld2"
-    save(fname, "data", data, "esets", esets, "tokens", m.vocab.tokens, "inpdict", m.vocab.inpdict, "outdict", m.vocab.outdict, "embeddings", embeddings)
+    #save(fname, "data", data, "esets", esets, "tokens", m.vocab.tokens, "inpdict", m.vocab.inpdict, "outdict", m.vocab.outdict, "embeddings", embeddings)
+    save(fname, "data", data, "esets", esets, "vocab", m.vocab, "embeddings", embeddings)
 end
 
 function load_preprocessed_data(config)
     task = config["task"]
     d = load(prefix(task, config) * "_processesed.jld2")
-    p = Parser{task}()
-    d["data"], d["esets"], Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
+    #p = Parser{task}()
+    d["data"], d["esets"], d["vocab"], get(d,"embeddings",nothing) #Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
 end
 
 function Base.sortperm(A::AbstractMatrix; dims::Integer, rev::Bool = false)
@@ -383,6 +429,34 @@ function Base.sortperm(A::AbstractMatrix; dims::Integer, rev::Bool = false)
     end
     return P
 end
+
+import KnetLayers.Knet: _ser, JLDMODE, save
+
+function save(f::AbstractString, nt::NamedTuple)
+    KnetLayers.save(f,Dict(zip(string.(keys(nt)), nt)))
+end
+
+function clip_gradient_norm_(J, max_norm=Inf; p=2)
+    weights  = parameters(J)
+    if isinf(p)
+        total_norm = maximum((abs.(grad(J,w)) for w in weights))
+    else
+        total_norm = 0.0
+        for w in weights
+            total_norm +=  norm(grad(J,w)) .^ 2
+        end
+        total_norm = sqrt(total_norm)
+    end
+    clip_coef = max_norm / (total_norm + 1e-6)
+    if clip_coef < 1
+        for w in weights
+            Knet.lmul!(clip_coef, grad(J,w))
+        end
+    end
+    return total_norm
+end
+
+
 
 
 # function attend2(x, projX, h, projH, att, mask=nothing; sumout=true, pdrop=0.4)
