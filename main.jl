@@ -52,30 +52,49 @@ function main(config)
     exp_time = Dates.format(Dates.now(), "mm-dd_HH.MM")
     processed, esets, model = get_data_model(config)
     task, cond, vocab =  config["task"], config["conditional"], model.vocab
+    MT  = config["model"]
     #words = [Set(map(s->join(vocab.tokens[xfield(task,s,cond)],' '),set)) for set in esets]
-    println("example: ",map(x->vocab.tokens[x],rand(processed[1])))
-    train!(model, processed[1]; dev=processed[end])
+    @show rand(processed[1])
+    #println("example: ",map(x->vocab.tokens[x],rand(processed[1])))
+    if MT <: Recombine || MT <: ProtoVAE
+        @show KLterm = kl_calc(model)
+        if task == YelpDataSet
+            trnlen = 1558749
+        else
+            trnlen = length(first(pickprotos(model, processed, esets)))
+            @show trnlen
+        end
+    else
+        KLterm = 0
+        trnlen = 1
+    end
+
+    train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
     samples = sample(model,processed[2])
 
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
     mi       = calc_mi(model, processed[2])
-    testppl  = calc_ppl(model, processed[2])
+    testppl  = calc_ppl(model, processed[2]; trnlen=trnlen)
     if config["calc_trainppl"]
         println("Calculating train ppl")
-        trainppl = calc_ppl(model, processed[1])
+        trainppl = calc_ppl(model, processed[1]; trnlen=trnlen)
     else
         trainppl = nothing
     end
     println("Calculating dict ppl")
-    dictppl = calc_ppl(model, processed[end])
+    dictppl = calc_ppl(model, processed[end]; trnlen=trnlen)
     existsamples, interex = [],[]
-    saveprefix = string("checkpoints/",task,"/",exp_time)
+    langstr = task == SIGDataSet ? string("_lang_",config["lang"],"_") : ""
+    saveprefix = string("checkpoints/",task,"/",MT,langstr,"_split_",config["split"],"_",exp_time)
     samplefile = saveprefix*"_samples.txt"
     println("generating and printing samples")
     nonexistsamples = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"])
-    ex_test_data    = [map(field->vocab.tokens[field],d) for d in rand(processed[1],10)]
-    result = (model=model, ex_test_data=ex_test_data, existsamples=existsamples, nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,testppl=testppl, trainppl=trainppl, dictppl=dictppl)
+    ex_test_data = rand(processed[1],10) #[map(field->vocab.tokens[field],d) for d in rand(processed[1],10)]
+    result = (model=model, ex_test_data=ex_test_data, existsamples=existsamples,
+              nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,
+              testppl=testppl, trainppl=trainppl, dictppl=dictppl,
+              logtrnlen=log(trnlen), KL=KLterm)
     println("saving the model and samples")
     KnetLayers.save(saveprefix * "_results.jld2", result)
     if task == SCANDataSet
@@ -103,6 +122,10 @@ function main(config)
     #
     # println("Generating Interpolation Examples")
     # interex  = sampleinter(model, processed[1])
+
+    open("sigresults.txt", "a+") do f
+        println(f, saveprefix, "\t", result.testppl, "\t", result.dictppl, "\t", result.logtrnlen,"\t", result.KL)
+    end
     return result
 end
 
@@ -167,7 +190,104 @@ end
 # end
 
 
-yelp_config = Dict(
+
+
+
+rnnlm_sig_config = Dict(
+               "model"=> RNNLM,
+               "lang"=>"turkish",
+               "kill_edit"=>false,
+               "attend_pr"=>0,
+               "A"=>32,
+               "H"=>512,
+               "Z"=>16,
+               "E"=>64,
+               "B"=>4,
+               "attdim"=>128,
+               "concatz"=>true,
+               "optim"=>Adam(lr=0.001),
+               "kl_weight"=>0.0,
+               "kl_rate"=> 0.05,
+               "fb_rate"=>4,
+               "N"=>10000,
+               "useprior"=>true,
+               "aepoch"=>1, #20
+               "epoch"=>100,  #40
+               "Ninter"=>10,
+               "pdrop"=>0.4,
+               "calctrainppl"=>false,
+               "Nsamples"=>300,
+               "pplnum"=>1000,
+               "authresh"=>0.1,
+               "Nlayers"=>2,
+               "Kappa"=>25,
+               "max_norm"=>10.0,
+               "eps"=>1.0,
+               "activation"=>ELU,
+               "maxLength"=>45,
+               "calc_trainppl"=>false,
+               "num_examplers"=>2,
+               "dist_thresh"=>0.6,
+               "max_cnt_nb"=>10,
+               "task"=>SIGDataSet,
+               "patiance"=>8,
+               "lrdecay"=>0.5,
+               "conditional" => true,
+               "split" => "medium",
+               "splitmodifier" => "right",
+               "beam_width" => 4
+               )
+
+
+
+proto_sig_config = Dict(
+               "model"=> ProtoVAE,
+               "lang"=>"turkish",
+               "kill_edit"=>false,
+               "attend_pr"=>0,
+               "A"=>32,
+               "H"=>512,
+               "Z"=>16,
+               "E"=>64,
+               "B"=>8,
+               "attdim"=>128,
+               "concatz"=>true,
+               "optim"=>Adam(lr=0.001),
+               "kl_weight"=>0.0,
+               "kl_rate"=> 0.05,
+               "fb_rate"=>4,
+               "N"=>10000,
+               "useprior"=>true,
+               "aepoch"=>1, #20
+               "epoch"=>15,  #40
+               "Ninter"=>10,
+               "pdrop"=>0.4,
+               "calctrainppl"=>false,
+               "Nsamples"=>300,
+               "pplnum"=>1000,
+               "authresh"=>0.1,
+               "Nlayers"=>2,
+               "Kappa"=>25,
+               "max_norm"=>10.0,
+               "eps"=>1.0,
+               "activation"=>ELU,
+               "maxLength"=>45,
+               "calc_trainppl"=>false,
+               "num_examplers"=>2,
+               "dist_thresh"=>0.6,
+               "max_cnt_nb"=>10,
+               "task"=>SIGDataSet,
+               "patiance"=>6,
+               "lrdecay"=>0.5,
+               "conditional" => true,
+               "split" => "medium",
+               "splitmodifier" => "right",
+               "beam_width" => 4
+               )
+
+
+
+proto_yelp_config = Dict(
                "model"=> ProtoVAE,
                "lang"=>"turkish",
                "kill_edit"=>false,
@@ -210,6 +330,114 @@ yelp_config = Dict(
                "split" => "simple",
                "splitmodifier" => "right"
                )
+
+recombine_scan_config = Dict(
+              "model"=> Recombine,
+              "lang"=>"turkish",
+              "kill_edit"=>false,
+              "attend_pr"=>0,
+              "A"=>32,
+              "H"=>256,
+              "Z"=>16,
+              "E"=>64,
+              "B"=>32,
+              "attdim"=>128,
+              "Kpos" =>16,
+              "concatz"=>true,
+              "optim"=>Adam(lr=0.001),
+              "gradnorm"=>30.0,
+              "kl_weight"=>0.0,
+              "kl_rate"=> 0.05,
+              "fb_rate"=>4,
+              "N"=>100,
+              "useprior"=>true,
+              "aepoch"=>1, #20
+              "epoch"=>10,  #40
+              "Ninter"=>10,
+              "pdrop"=>0.5,
+              "calctrainppl"=>false,
+              "Nsamples"=>300,
+              "pplnum"=>1000,
+              "authresh"=>0.1,
+              "Nlayers"=>2,
+              "Kappa"=>25,
+              "max_norm"=>10.0,
+              "eps"=>1.0,
+              "activation"=>ELU,
+              "maxLength"=>45,
+              "calc_trainppl"=>false,
+              "num_examplers"=>2,
+              "dist_thresh"=>0.5,
+              "max_cnt_nb"=>5,
+              "task"=>SCANDataSet,
+              "patiance"=>4,
+              "lrdecay"=>0.5,
+              "conditional" => true,
+              "split" => "add_prim",
+              "splitmodifier" => "jump",
+              "beam_width" => 4,
+              "copy" => true,
+              "writedrop" => 0.5,
+              "outdrop" => 0.7,
+              "attdrop" => 0.1,
+              "outdrop_test" => true,
+              "positional" => true,
+              "masktags" => false
+              )
+
+recombine_sig_config = Dict(
+             "model"=> Recombine,
+             "lang"=>"turkish",
+             "kill_edit"=>false,
+             "attend_pr"=>0,
+             "A"=>32,
+             "H"=>512,
+             "Z"=>16,
+             "E"=>64,
+             "B"=>16,
+             "attdim"=>128,
+             "Kpos" =>16,
+             "concatz"=>true,
+             "optim"=>Adam(lr=0.002),
+             "kl_weight"=>0.0,
+             "kl_rate"=> 0.05,
+             "fb_rate"=>4,
+             "N"=>100,
+             "useprior"=>true,
+             "aepoch"=>1, #20
+             "epoch"=>15,  #40
+             "Ninter"=>10,
+             "pdrop"=>0.5,
+             "calctrainppl"=>false,
+             "Nsamples"=>300,
+             "pplnum"=>1000,
+             "authresh"=>0.1,
+             "Nlayers"=>2,
+             "Kappa"=>25,
+             "max_norm"=>10.0,
+             "eps"=>1.0,
+             "activation"=>ELU,
+             "maxLength"=>45,
+             "calc_trainppl"=>false,
+             "num_examplers"=>2,
+             "dist_thresh"=>0.5,
+             "max_cnt_nb"=>5,
+             "task"=>SIGDataSet,
+             "patiance"=>6,
+             "lrdecay"=>0.5,
+             "conditional" => true,
+             "split" => "medium",
+             "splitmodifier" => "jump",
+             "beam_width" => 4,
+             "copy" => true,
+             "writedrop" => 0.1,
+             "outdrop" => 0.1,
+             "attdrop" => 0.1,
+             "outdrop_test" => false,
+             "positional" => true,
+             "masktags" => false
+             )
+
 
 #
 # default_config = Dict(

@@ -316,6 +316,7 @@ end
 function KnetLayers.PadSequenceArray(batch::Vector{Vector{T}}; pad=0, makefalse=true) where T<:Integer
     lngths = map(length,batch)
     Tmax   = maximum(lngths)
+    B = length(batch)
     if Tmax == 0
         (tokens=pad * ones(T,B,1), mask=makefalse .& trues(B,1))
     else

@@ -15,7 +15,7 @@ end
 function PositionalAttention(;memory::Int,query::Int,att::Int, aij_k=nothing, aij_v=nothing)
     PositionalAttention(Dense(input=memory,output=att, winit=att_weight_init, activation=Tanh()),
               Dense(input=query,output=att, winit=att_weight_init, activation=Tanh()),
-              Dense(input=memory,output=memory, winit=att_weight_init, activation=Tanh()),
+              Dense(input=memory,output=att, winit=att_weight_init, activation=Tanh()),
               aij_k,
               aij_v,
               att)
@@ -99,28 +99,28 @@ struct Recombine{Data}
 end
 
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
-    aij_k = Embed(att_weights(input=2*config["Kpos"]+1, output=config["attdim"]))
-    aij_v = Embed(param(config["H"],2*config["Kpos"]+1,; atype=arrtype))
+    aij_k = Embed(param(config["attdim"], 2*config["Kpos"]+1, init=att_weight_init, atype=arrtype))
+    aij_v = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
     dinput =  config["E"]  + config["A"]
     Recombine{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
-                Linear(input=3config["H"], output=config["E"]),
+                Linear(input=config["H"]+2config["attdim"], output=config["E"]),
                 Multiply(input=config["E"], output=config["Z"]),
-                LSTM(input=config["E"], hidden=config["H"],  bidirectional=false, numLayers=1),
-                LSTM(input=config["E"], hidden=config["H"],  bidirectional=false, numLayers=1),
-                PositionalAttention(memory=config["H"], query=config["H"], att=config["H"]),
+                LSTM(input=config["E"], hidden=config["H"],  dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"]), # NOTE: don't forget there was no rnn dropout in SCAN experiments
+                LSTM(input=config["E"], hidden=config["H"],  dropout=config["pdrop"],  bidirectional=true, numLayers=config["Nlayers"]),
+                PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"]),
         #        Attention(memory=config["H"], query=config["H"], att=config["H"]),
                 Linear(input=2config["H"], output=2config["Z"]),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
-                PositionalAttention(memory=config["H"],query=config["H"]+config["A"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
+                PositionalAttention(memory=2config["H"],query=config["H"]+config["A"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
         #        PositionalAttention(memory=config["H"],query=config["H"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
                 Pw{Float32}(2config["Z"], config["Kappa"]),
                 vocab,
                 config)
 end
 
-calc_ppl(model::Recombine, data)    = train!(model, data; eval=true, dev=nothing)
+calc_ppl(model::Recombine, data; trnlen=1)    = train!(model, data; eval=true, dev=nothing, trnlen=trnlen)
 calc_mi(model::Recombine, data)     = nothing
 calc_au(model::Recombine, data)     = nothing
 sampleinter(model::Recombine, data) = nothing
@@ -176,6 +176,9 @@ function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
                         end
                     end
                 end
+                if cnt == 0
+                    push!(neighbours, rand(inds))
+                end
             end
         end
         push!(adjlists, processed)
@@ -224,7 +227,7 @@ end
 
 clip_index(x; K=16) = max(-K, min(K, x)) + K + 1
 position_calc(L, step; K=16) = clip_index.(collect(1:L) .- step; K=K)
-function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=false )
+function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=false)
     result_traces = []
     bw = model.config["beam_width"]
     Kpos = model.config["Kpos"]
@@ -264,7 +267,6 @@ function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=
     @inbounds for i=1:bw
         probs      = global_srt_probs[i:i,:]
         inds       = map(s->divrem(s,bw), global_srt_inds[i,:] .- 1)
-
         states     = ntuple(k->cat((result_traces[trace+1][2][k][:,bi:bi,:] for (bi, (trace, _)) in enumerate(inds))..., dims=2),2)
         inputs     = vcat((result_traces[trace+1][4][loc+1,bi] for (bi, (trace, loc)) in enumerate(inds))...)
         if step == 1
@@ -358,7 +360,7 @@ function decode_train(model::Recombine, x, xp, xpp, z)
     else
         positions = (nothing,nothing)
     end
-    xp_attn, xp_score, _   = model.xp_attention(xp.context,htop;mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
+    xp_attn, xp_score, _   = model.xp_attention(xp.context,htop; mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
     xpp_attn, xpp_score, _ = model.xp_attention(xpp.context,htop;mask=masks[2], pdrop=attdrop, positions=positions[2])
     if model.config["outdrop_test"]
         y               = model.output(vcat(dropout(out.y, outdrop; drop=true),xp_attn,xpp_attn))
@@ -411,14 +413,14 @@ function ind2BT(write_inds, copy_inds, H, BT)
     copy_batches   = map(ind->(ind ÷ H) + 1, copy_inds .- 1)
     inds = [[write_inds[findall(b->b==i, write_batches)]; copy_inds[findall(b->b==i, copy_batches)]] for i=1:BT]
     inds_masked, inds_mask  = PadSequenceArray(inds, pad=specialIndicies.mask, makefalse=false)
-    return (tokens=inds_masked, mask=inds_mask, sumind=findall(length.(inds) .> 0))
+    return (tokens=inds_masked, mask=inds_mask, sumind=findall(length.(inds) .> 0), unpadded=inds)
 end
 
 function loss(model::Recombine, data; average=false, eval=false)
     x, xp, xpp, copyinds, unbatched = data
     B = length(first(unbatched))
     copy_indices  = cat1d(copyinds...)
-    z, Txp, Txpp = encode(model, x, xp, xpp; prior=false)
+    z, Txp, Txpp = encode(model, x, xp, xpp; prior=eval)
     output, _ = decode_train(model, x.tokens, Txp, Txpp, z)
     ytokens, ymask = x.tokens[:,2:end], x.mask[:, 2:end]
     if !eval
@@ -427,8 +429,18 @@ function loss(model::Recombine, data; average=false, eval=false)
     write_indices = findindices(output, (ytokens .* ymask), dims=1)
     probs = softmax(mat(output, dims=1), dims=1) # H X BT
     inds = ind2BT(write_indices, copy_indices, size(probs)...)
-    marginals = log.(sum(probs[inds.tokens] .* arrtype(inds.mask),dims=2) .+ 1e-12)
-    loss = -sum(marginals[inds.sumind]) / B
+    if !eval
+        marginals = log.(sum(probs[inds.tokens] .* arrtype(inds.mask),dims=2) .+ 1e-12)
+        loss = -sum(marginals[inds.sumind]) / B
+    else
+        unpadded = reshape(inds.unpadded, B, :)
+        T = size(unpadded,2)
+        losses = []
+        for i=1:B
+            push!(losses, -sum((log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t]))))
+        end
+        return losses
+    end
 end
 
 function copy_indices(xp, xmasked, L::Integer, offset::Integer=0)
@@ -451,7 +463,7 @@ end
 
 limit_seq_length(x; maxL=30) = map(s->(length(s)>maxL ? s[1:Int(maxL)] : s) , x)
 
-function getbatch_recombine(model, iter, B)
+function getbatch(model::Recombine, iter, B)
     edata = collect(Iterators.take(iter,B))
     b = length(edata); b==0 && return nothing
     unk, mask, eow, bow, sep = specialIndicies
@@ -475,26 +487,35 @@ function getbatch_recombine(model, iter, B)
     return seq_x, seq_xp, seq_xpp, (xp_copymask, xpp_copymask), d
 end
 
-function train!(model::Recombine, data; eval=false, dev=nothing)
-    bestparams = deepcopy(parameters(model))
-    setoptim!(model,model.config["optim"])
+function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
     ppl = typemax(Float64)
     if !eval
-        model.config["rpatiance"] = model.config["patiance"]
+        bestparams = deepcopy(parameters(model))
+        setoptim!(model,model.config["optim"])
+        model.config["rpatiance"]  = model.config["patiance"]
         model.config["rwritedrop"] = model.config["writedrop"]
+        model.config["gradnorm"]   = 0.0
+    else
+        data, evalinds = create_ppl_examples(shuffle(data), 250)
+        losses = []
     end
-    total_iter = 0
+    total_iter, lss, ntokens, ninstances =0, 0.0, 0.0, 0.0
+
     for i=1:(eval ? 1 : model.config["epoch"])
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
-        dt  = Iterators.Stateful(shuffle(data))
+        dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i in progress(msg, 1:(length(dt) ÷ model.config["B"]))
+        for i in progress(msg, 1:((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
-            d = getbatch_recombine(model, dt,model.config["B"])
-            b = size(d[1].mask,1)
-            n = sum(d[1].mask[:,2:end]) + sum(length,d[4])
+            d = getbatch(model, dt, model.config["B"])
+            isnothing(d) && continue
             if !eval
                 J = @diff loss(model, d)
+                if total_iter < 50
+                    model.config["gradnorm"] = max(model.config["gradnorm"], 2*clip_gradient_norm_(J, Inf))
+                else
+                    clip_gradient_norm_(J, model.config["gradnorm"])
+                end
                 for w in parameters(J)
                     g = grad(J,w)
                     if !isnothing(g)
@@ -503,10 +524,15 @@ function train!(model::Recombine, data; eval=false, dev=nothing)
                 end
                 #model.config["rwritedrop"] = max(model.config["rwritedrop"] - 0.0001,model.config["writedrop"])
             else
-                J = loss(model, d; eval=true)
+                #J = loss(model, d; eval=true)
+                ls = loss(model, d; eval=true)
+                append!(losses,ls)
+                J = mean(ls)
             end
-            lss        += (value(J)*b)
-            ntokens    += n
+            b = size(d[1].mask,1)
+            n = sum(d[1].mask[:,2:end])
+            lss += (value(J)*b)
+            ntokens += n
             ninstances += b
             if !eval && i%500==0
                 #print_ex_samples(model, data; beam=true)
@@ -517,8 +543,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing)
             end
         end
         if !isnothing(dev)
-            newppl = calc_ppl(model, dev)
-
+            newppl = calc_ppl(model, dev; trnlen=trnlen)[1]
             if newppl > ppl-0.0025 # not a good improvement
                 lrdecay!(model, model.config["lrdecay"])
                 model.config["rpatiance"] = model.config["rpatiance"] - 1
@@ -534,28 +559,24 @@ function train!(model::Recombine, data; eval=false, dev=nothing)
                 end
                 ppl = newppl
             end
-
-
-
         else
             println((loss=lss/ntokens,))
         end
         if eval
-            ppl = exp(lss/ntokens + kl_calc(model)*ninstances/ntokens)
+            s_losses = map(inds->-logsumexp(-losses[inds]), evalinds)
+            nwords = sum((sum(data[first(inds)].x .> 4)+1  for inds in evalinds))
+            ppl = exp(sum(s_losses .+ kl_calc(model) .+ log(trnlen))/nwords)
+            @show ppl
         end
 #        total_iter > 400000 && break
     end
-    if !isnothing(dev)
+    if !isnothing(dev) && !eval
         for (best, current) in zip(bestparams,parameters(model))
             copyto!(value(current),value(best))
         end
     end
-    return ppl
+    return (ppl=ppl, ptokloss=lss/ntokens, pinstloss=lss/ninstances)
 end
-
-
-
-
 
 function vmfKL(m::Recombine)
    k, d = m.config["Kappa"], 2m.config["Z"]
@@ -714,7 +735,7 @@ function preprocess(m::Recombine{SIGDataSet}, train, devs...)
                         diff        = compare(diffw,w,dist)
                         tdiff       = compare(trntags[n],tag,dist)
                         trealdiff   = setdiff(difftag,tag_tokens)
-                        if length(trealdiff) == 0 &&  tdiff > 0.7
+                        if length(trealdiff) == 0 &&  tdiff > thresh
                             push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l].x))
                             cnt+=1
                             cnt == maxcnt && break
@@ -848,7 +869,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
     vocab = model.vocab
     samples = []
     while true
-        d = getbatch_recombine(model, dataloader, B)
+        d = getbatch(model, dataloader, B)
         if isnothing(d)
              warning("sampled less variable than expected")
              break
@@ -871,7 +892,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
                 continue
             end
             probs2D = softmax(hcat(probs...), dims=2)
-            predstr = [join(ntuple(k->trim(preds[k][i,:], vocab),length(preds)),'\n')  for i=1:B]
+            predstr = [join(ntuple(k->trim(preds[k][i,:], vocab),length(preds)),'\n')  for i=1:b]
             predenc = [trimencoded(preds[1][i,:]) for i=1:b]
         else
             y, preds   = decode(model, x.tokens, Txp, Txpp, z, (xp.tokens,xpp.tokens); sampler=sampler, training=false)
@@ -936,139 +957,3 @@ end
 #
 # realindex(model::Recombine, xp::Matrix{Int}, xpp::Matrix{Int}, indices::Vector{Int}) =
 #     map(ki->realindex(length(model.vocab.tokens), view(xp,ki[1],:), view(xpp,ki[1],:), ki[2]), enumerate(indices))
-recombine_config = Dict(
-               "model"=> Recombine,
-               "lang"=>"turkish",
-               "kill_edit"=>false,
-               "attend_pr"=>0,
-               "A"=>32,
-               "H"=>256,
-               "Z"=>16,
-               "E"=>64,
-               "B"=>32,
-               "attdim"=>32,
-               "Kpos" =>16,
-               "concatz"=>true,
-               "optim"=>Adam(lr=0.002, gclip=10.0),
-               "kl_weight"=>0.0,
-               "kl_rate"=> 0.05,
-               "fb_rate"=>4,
-               "N"=>100,
-               "useprior"=>true,
-               "aepoch"=>1, #20
-               "epoch"=>10,  #40
-               "Ninter"=>10,
-               "pdrop"=>0.5,
-               "calctrainppl"=>false,
-               "Nsamples"=>100,
-               "pplnum"=>1000,
-               "authresh"=>0.1,
-               "Nlayers"=>2,
-               "Kappa"=>25,
-               "max_norm"=>10.0,
-               "eps"=>1.0,
-               "activation"=>ELU,
-               "maxLength"=>45,
-               "calc_trainppl"=>false,
-               "num_examplers"=>2,
-               "dist_thresh"=>0.5,
-               "max_cnt_nb"=>5,
-               "task"=>SCANDataSet,
-               "patiance"=>4,
-               "lrdecay"=>0.5,
-               "conditional" => true,
-               "split" => "add_prim",
-               "splitmodifier" => "jump",
-               "beam_width" => 4,
-               "copy" => true,
-               "writedrop" => 0.5,
-               "outdrop" => 0.7,
-               "attdrop" => 0.1,
-               "outdrop_test" => true,
-               "positional" => true,
-               "masktags" => false
-               )
-
-sigmorphon_config = Dict(
-              "model"=> Recombine,
-              "lang"=>"turkish",
-              "kill_edit"=>false,
-              "attend_pr"=>0,
-              "A"=>32,
-              "H"=>512,
-              "Z"=>16,
-              "E"=>64,
-              "B"=>16,
-              "attdim"=>32,
-              "Kpos" =>16,
-              "concatz"=>true,
-              "optim"=>Adam(lr=0.001, gclip=5.0),
-              "kl_weight"=>0.0,
-              "kl_rate"=> 0.05,
-              "fb_rate"=>4,
-              "N"=>100,
-              "useprior"=>true,
-              "aepoch"=>1, #20
-              "epoch"=>15,  #40
-              "Ninter"=>10,
-              "pdrop"=>0.5,
-              "calctrainppl"=>false,
-              "Nsamples"=>300,
-              "pplnum"=>1000,
-              "authresh"=>0.1,
-              "Nlayers"=>2,
-              "Kappa"=>25,
-              "max_norm"=>10.0,
-              "eps"=>1.0,
-              "activation"=>ELU,
-              "maxLength"=>45,
-              "calc_trainppl"=>false,
-              "num_examplers"=>2,
-              "dist_thresh"=>0.5,
-              "max_cnt_nb"=>5,
-              "task"=>SIGDataSet,
-              "patiance"=>6,
-              "lrdecay"=>0.5,
-              "conditional" => true,
-              "split" => "medium",
-              "splitmodifier" => "jump",
-              "beam_width" => 4,
-              "copy" => true,
-              "writedrop" => 0.5,
-              "outdrop" => 0.1,
-              "attdrop" => 0.1,
-              "outdrop_test" => false,
-              "positional" => true,
-              "masktags" => false
-              )
-               # function print_samples_sig(model, eset;beam=true, fname="samples.txt", N=400)
-               #     data, train_inputs, train_outputs = pickprotos(model, eset)
-               #     inpdict, outdict = model.vocab.inpdict.toIndex, model.vocab.outdict.toIndex
-               #     samples = sample(model, data; N=N*300, sampler=argmax, prior=true, beam=beam)
-               #     tags = Set(setdiff(model.vocab.inpdict.toElement,model.vocab.outdict.toElement))
-               #     cnt = 0
-               #     open(fname, "w+") do f
-               #         for s in samples
-               #              if s.probs[1] > (1.2 / model.config["beam_width"])
-               #                 datum = model.vocab.tokens[s.sampleenc]
-               #                 if "→" ∈ datum && length(findall(d->d=="→", datum)) == 1
-               #                     tokens = datum
-               #                     index = findfirst(t->t=="→",tokens)
-               #                     input,output = tokens[1:index-1], tokens[index+1:end]
-               #                     indexsep = findfirst(t->t ∈ tags,input)
-               #                     lemma, ts = input[1:indexsep-1], input[indexsep+1:end]
-               #                     (length(ts) == 0 || length(lemma) == 0 || length(output) == 0) && continue
-               #                     line = "$(join(lemma))\t$(join(output))\t$(join(ts,';'))"
-               #                     input, output = parseDataLine(line, model.vocab.parser)
-               #                     if join(input,' ') ∉ train_inputs && join(output,' ') ∉ train_outputs && all(i->haskey(inpdict,i), input) &&  all(i->haskey(outdict,i), output)
-               #                         println(f,line)
-               #                         cnt+=1
-               #                         if cnt == N
-               #                             break
-               #                         end
-               #                     end
-               #                 end
-               #              end
-               #         end
-               #     end
-               # end
