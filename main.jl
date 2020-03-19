@@ -328,7 +328,8 @@ proto_yelp_config = Dict(
                "lrdecay"=>0.5,
                "conditional" => false,
                "split" => "simple",
-               "splitmodifier" => "right"
+               "splitmodifier" => "right",
+               "beam_width" => 4
                )
 
 recombine_scan_config = Dict(

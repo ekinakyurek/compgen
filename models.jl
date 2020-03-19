@@ -746,7 +746,7 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1)
                 append!(losses,ls)
                 J = mean(ls)
             end
-            b           = length(last(d))
+            b           = size(d[1],1)
             n           = sum(d[2][:,2:end])
             lss        += (value(J)*b)
             ntokens    += n
