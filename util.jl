@@ -1,7 +1,5 @@
 using Knet
-if gpu()<0
-    gpu(0)
-end
+gpu()<0 && gpu(0)
 using KnetLayers, Distributions
 import KnetLayers: Knet, nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
 const parameters = KnetLayers.params
@@ -114,6 +112,7 @@ end
 sample(y) = catsample(softmax(y;dims=1))
 
 function catsample(p)
+    p = p ./ sum(p)
     r = rand()
     for c = 1:length(p)
         r -= p[c]
@@ -409,7 +408,7 @@ function load_preprocessed_data(config)
     task = config["task"]
     d = load(prefix(task, config) * "_processesed.jld2")
     #p = Parser{task}()
-    d["data"], d["esets"], d["vocab"], get(d,"embeddings",nothing) #Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
+    get(d,"data",d["esets"]), d["esets"], d["vocab"], get(d,"embeddings",nothing) #Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
 end
 
 function Base.sortperm(A::AbstractMatrix; dims::Integer, rev::Bool = false)
@@ -431,7 +430,7 @@ function Base.sortperm(A::AbstractMatrix; dims::Integer, rev::Bool = false)
     return P
 end
 
-import KnetLayers.Knet: _ser, JLDMODE, save
+import Knet: _ser, JLDMODE, save
 
 function save(f::AbstractString, nt::NamedTuple)
     KnetLayers.save(f,Dict(zip(string.(keys(nt)), nt)))

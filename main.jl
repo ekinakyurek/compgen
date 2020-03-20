@@ -85,8 +85,9 @@ function main(config)
     println("Calculating dict ppl")
     dictppl = calc_ppl(model, processed[end]; trnlen=trnlen)
     existsamples, interex = [],[]
-    langstr = task == SIGDataSet ? string("_lang_",config["lang"],"_") : ""
-    saveprefix = string("checkpoints/",task,"/",MT,langstr,"_split_",config["split"],"_",exp_time)
+    langstr  = task == SIGDataSet ? string("_lang_",config["lang"],"_") : "_"
+    modelstr = get(config,"copy",false) ? string(MT,"copy") : string(MT)
+    saveprefix = string("checkpoints/",task,"/",modelstr,langstr,"split_",config["split"],"_",exp_time,"_",hash(config))
     samplefile = saveprefix*"_samples.txt"
     println("generating and printing samples")
     nonexistsamples = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"])
@@ -96,21 +97,21 @@ function main(config)
               testppl=testppl, trainppl=trainppl, dictppl=dictppl,
               logtrnlen=log(trnlen), KL=KLterm)
     println("saving the model and samples")
-    KnetLayers.save(saveprefix * "_results.jld2", result)
-    if task == SCANDataSet
-        println("converting samples to json for downstream task")
-        jfile = to_json(model, samplefile)
-        println("copying samples to downstream location")
-        for i=0:9
-            cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
-        end
-    elseif task == SIGDataSet
-        files = rawfiles(task, config)
-        lang, split = config["lang"], config["split"]
-        datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
-        write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
-        write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
-    end
+    # KnetLayers.save(saveprefix * "_results.jld2", result)
+    # if task == SCANDataSet
+    #     println("converting samples to json for downstream task")
+    #     jfile = to_json(model, samplefile)
+    #     println("copying samples to downstream location")
+    #     for i=0:9
+    #         cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
+    #     end
+    # elseif task == SIGDataSet
+    #     files = rawfiles(task, config)
+    #     lang, split = config["lang"], config["split"]
+    #     datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
+    #     write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
+    #     write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
+    # end
 
     # existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
     #                  tstsamples  = samples[findall(s->in(s,words[2]), samples)],
@@ -123,6 +124,9 @@ function main(config)
     # println("Generating Interpolation Examples")
     # interex  = sampleinter(model, processed[1])
 
+    open(saveprefix * ".config","w+") do f
+        println(f,config)
+    end
     open("sigresults.txt", "a+") do f
         println(f, saveprefix, "\t", result.testppl, "\t", result.dictppl, "\t", result.logtrnlen,"\t", result.KL)
     end
@@ -152,25 +156,27 @@ function printsamples(fname,words)
     end
 end
 
-function main_simple(config)
-    println("Preprocessing Data & Initializing Model")
-    processed, esets, model = get_data_model(config)
-    println("Train Starts")
-    train!(model, processed[1]; dev=processed[end])
+
+function parse_results(fname)
+    results = readlines(fname)
+    for result in results
+           name, testppl, dictppl, logtrnlen, KL = split(result,'\t')
+           ppl, ptokLoss, pinstLoss =  eval(Meta.parse(testppl))
+           start =  findnext("/",name,findfirst("/",name)[1]+1)[1]
+           modelend = findnext("_",name,start)[1]
+           model_name = name[start+1:modelend-1]
+           langstart = findnext("_",name,modelend+1)[1]
+           langend   = findnext("_",name,langstart+1)[1]
+           lang_name = name[langstart+1:langend-1]
+           split_start = findnext("_",name,langend+1)[1]
+           split_end   = findnext("_",name,split_start+1)[1]
+           split_name = name[split_start+1:split_end-1]
+           println(name,",",lang_name,",",split_name,",",model_name,",",ppl,",",ptokLoss,",",pinstLoss,",", KL,",",logtrnlen)
+    end
 end
 
-function get_experiments_simple()
-    E          = [32, 64, 128]
-    Z          = [8, 16, 32, 64]
-    LR         = [0.0005, 0.001, 0.002]
-    Kappa      = [15, 25]
-    maxnorm    = [5.0, 10.0]
-    writedrop  = [0.3, 0.5, 0.7]
-    H          = [256, 512]
-    positional = [true, false]
-    gclip      = [5.0, 10.0]
-    exps = vec(collect(Iterators.product(H,E,Z,LR,Kappa,maxnorm, writedrop, positional, gclip)))
-end
+
+
 #
 # function run_experiments_simple(baseconfig)
 #     f = open("resultr.csv","w+")
@@ -332,7 +338,7 @@ proto_yelp_config = Dict(
                "splitmodifier" => "right",
                "beam_width" => 4,
                "copy" => false,
-                "writedrop" => 0.1
+               "writedrop" => 0.1
                )
 
 recombine_scan_config = Dict(
@@ -441,6 +447,8 @@ recombine_sig_config = Dict(
              "positional" => true,
              "masktags" => false
              )
+
+
 
 
 #

@@ -78,7 +78,7 @@ prefix(dataset::Type{YelpDataSet}, opt) =
 
 function rawfiles(dataset::Type{YelpDataSet}, config)
     ["data/Yelp/train.tsv",
-     "data/Yelp/test.tsv",
+     "data/Yelp/test2.tsv",
      "data/Yelp/valid.tsv"]
 end
 

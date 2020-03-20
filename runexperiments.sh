@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:volta:1
 #SBATCH --qos=high
 #SBATCH --time=30:00:00
-#SBATCH --cpus-per-task=5
+#SBATCH --cpus-per-task=10
 #SBATCH --constraint=xeon-g6
 #SBATCH --job-name="scan"
 #SBATCH --output=scan.out

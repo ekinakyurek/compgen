@@ -780,6 +780,9 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1)
             @show ppl
         end
         #total_iter > 400000 && break
+        if total_iter % 30000 == 0
+            GC.gc(); KnetLayers.gc()
+        end
     end
     if !isnothing(dev)
         for (best, current) in zip(bestparams,parameters(model))
@@ -1034,7 +1037,7 @@ function decode(model::ProtoVAE, x, proto, ID, agenda; sampler=sample, training=
     limit      = (training ? size(x,2)-1 : model.config["maxLength"])
     preds      = ones(Int, B, limit)
     outputs    = []
-    Tp = size(proto.tokens,2)
+    L = model.config["copy"] ? V + size(proto.tokens,2) : V
     for i=1:limit
          output, attentions, states, scores, weights = decode_onestep(model, attentions, states, contexts, masks, agenda, input)
          if !training
@@ -1054,7 +1057,7 @@ function decode(model::ProtoVAE, x, proto, ID, agenda; sampler=sample, training=
          end
     end
 
-    return reshape(cat1d(outputs...),V+Tp,B,limit), preds
+    return reshape(cat1d(outputs...),L,B,limit), preds
 end
 
 function decode_onestep(model::ProtoVAE, attentions, states, contexts, masks, z, input)
@@ -1117,7 +1120,7 @@ function loss(model::ProtoVAE, data; eval=false)
         end
     else
         if !eval
-            nllmask(output,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=false) ./ B
+            loss = nllmask(output,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=false) ./ B
         else
             logpy = logp(output;dims=1)
             xinds = xmasked[:, 2:end] .* x_mask[:, 2:end]

@@ -451,10 +451,10 @@ function loss(model::Recombine, data; average=false, eval=false)
         end
     else
         if !eval
-            loss = nllmask(output,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=false) ./ B
+            loss = nllmask(output,ytokens .* ymask; average=false) ./ B
         else
             logpy = logp(output; dims=1)
-            xinds = xmasked[:, 2:end] .* x_mask[:, 2:end]
+            xinds = ytokens .* ymask
             loss = []
             for i=1:B
                 inds = fill!(similar(xinds),0)
@@ -520,7 +520,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
         model.config["rwritedrop"] = model.config["writedrop"]
         model.config["gradnorm"]   = 0.0
     else
-        data, evalinds = create_ppl_examples(shuffle(data), 1000)
+        data, evalinds = create_ppl_examples(data, 200) # FIXME: 1000
         losses = []
     end
     total_iter, lss, ntokens, ninstances =0, 0.0, 0.0, 0.0
