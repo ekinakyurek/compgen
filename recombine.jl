@@ -207,22 +207,24 @@ function beam_decode(model::Recombine, x, xp, xpp, z; forviz=false)
 end
 
 
-cat_copy_scores(m::Recombine, y, scores) =
-    m.config["copy"] ? vcat(y,scores[1], scores[2]) : y
+cat_copy_scores(m, y, scores...) =
+    m.config["copy"] ? vcat(y, scores...) : y
 
-function sumprobs(output, xp::AbstractMatrix{Int}, xpp::AbstractMatrix{Int})
+function sumprobs(output, protos::AbstractMatrix{Int}...) #xp::AbstractMatrix{Int}, xpp=nothing)
     L, B = size(output)
-    Tp, Tpp = size(xp,2), size(xpp,2)
-    V = L-Tp-Tpp
+    Tps = map(p->size(p,2), protos)
+    V = L-sum(Tps)
     for i=1:B
-        for t=1:Tp
-            @inbounds output[xp[i,t],i]  += output[V+t,i]
-        end
-        for t=1:Tpp
-            @inbounds output[xpp[i,t],i] += output[V+Tp+t,i]
+        cL = V
+        for (kp,Tp) in enumerate(Tps)
+            xp = protos[kp]
+            for t=1:Tp
+                @inbounds output[xp[i,t],i]  += output[cL+t,i]
+            end
+            cL += Tp
         end
     end
-    return log.(output[1:V,:])
+    return output[1:V,:]
 end
 
 clip_index(x; K=16) = max(-K, min(K, x)) + K + 1
@@ -239,9 +241,13 @@ function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=
         end
         y,_,scores,states,weights  = decode_onestep(model, states, protos, masks, z, cinput, positions)
         step == 1 ? negativemask!(y,1:6) : negativemask!(y,1:2,4)
-        yp  = cat_copy_scores(model, y, scores)
+        yp  = cat_copy_scores(model, y, scores...)
         out_soft  = convert(Array, softmax(yp,dims=1))
-        output = sumprobs(copy(out_soft), protos[1].tokens, protos[2].tokens)
+        if model.config["copy"]
+            output = log.(sumprobs(copy(out_soft), protos[1].tokens, protos[2].tokens))
+        else
+            output = log.(out_soft)
+        end
         srtinds = mapslices(x->sortperm(x; rev=true), output, dims=1)[1:bw,:]
         cprobs = sort(output; rev=true, dims=1)[1:bw,:]
         inputs = srtinds
@@ -327,12 +333,14 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true)
              i == 1 ? negativemask!(y,1:6) : negativemask!(y,1:2,4)
          end
 
-         output   = cat_copy_scores(model, y, scores)
+         output   = cat_copy_scores(model, y, scores...)
          push!(outputs, output)
 
          if !training
              output        = convert(Array, softmax(output,dims=1))
-             output        = sumprobs(output, protos[1].tokens, protos[2].tokens)
+             if model.config["copy"]
+                 output        = sumprobs(output, protos[1].tokens, protos[2].tokens)
+             end
              preds[:,i]    = vec(mapslices(sampler, output, dims=1))
              input         = preds[:,i:i]
          else
@@ -368,7 +376,7 @@ function decode_train(model::Recombine, x, xp, xpp, z)
         y               = model.output(vcat(dropout(out.y, outdrop),xp_attn,xpp_attn))
     end
     yv                  = reshape(At_mul_B(model.embed.weight,mat(y,dims=1)),V,B,limit)
-    output              = cat_copy_scores(model, yv, (xp_score,xpp_score))
+    output              = cat_copy_scores(model, yv, xp_score, xpp_score)
     return output, preds
 end
 
@@ -423,24 +431,40 @@ function loss(model::Recombine, data; average=false, eval=false)
     z, Txp, Txpp = encode(model, x, xp, xpp; prior=eval)
     output, _ = decode_train(model, x.tokens, Txp, Txpp, z)
     ytokens, ymask = x.tokens[:,2:end], x.mask[:, 2:end]
-    if !eval
-        ymask = ymask .* (rand(size(ymask)...) .> model.config["rwritedrop"])
-    end
-    write_indices = findindices(output, (ytokens .* ymask), dims=1)
-    probs = softmax(mat(output, dims=1), dims=1) # H X BT
-    inds = ind2BT(write_indices, copy_indices, size(probs)...)
-    if !eval
-        marginals = log.(sum(probs[inds.tokens] .* arrtype(inds.mask),dims=2) .+ 1e-12)
-        loss = -sum(marginals[inds.sumind]) / B
-    else
-        unpadded = reshape(inds.unpadded, B, :)
-        T = size(unpadded,2)
-        losses = []
-        for i=1:B
-            push!(losses, -sum((log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t]))))
+    if model.config["copy"]
+        if !eval
+            ymask = ymask .* (rand(size(ymask)...) .> model.config["rwritedrop"])
         end
-        return losses
+        write_indices = findindices(output, (ytokens .* ymask), dims=1)
+        probs = softmax(mat(output, dims=1), dims=1) # H X BT
+        inds = ind2BT(write_indices, copy_indices, size(probs)...)
+        if !eval
+            marginals = log.(sum(probs[inds.tokens] .* arrtype(inds.mask),dims=2) .+ 1e-12)
+            loss = -sum(marginals[inds.sumind]) / B
+        else
+            unpadded = reshape(inds.unpadded, B, :)
+            T = size(unpadded,2)
+            loss = []
+            for i=1:B
+                push!(loss, -sum((log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t]))))
+            end
+        end
+    else
+        if !eval
+            loss = nllmask(output,(xmasked[:, 2:end] .* x_mask[:, 2:end]); average=false) ./ B
+        else
+            logpy = logp(output; dims=1)
+            xinds = xmasked[:, 2:end] .* x_mask[:, 2:end]
+            loss = []
+            for i=1:B
+                inds = fill!(similar(xinds),0)
+                inds[i,:] .= xinds[i,:]
+                linds = KnetLayers.findindices(logpy, inds)
+                push!(loss,-sum(logpy[linds]))
+            end
+        end
     end
+    return loss
 end
 
 function copy_indices(xp, xmasked, L::Integer, offset::Integer=0)
@@ -496,7 +520,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
         model.config["rwritedrop"] = model.config["writedrop"]
         model.config["gradnorm"]   = 0.0
     else
-        data, evalinds = create_ppl_examples(shuffle(data), 250)
+        data, evalinds = create_ppl_examples(shuffle(data), 1000)
         losses = []
     end
     total_iter, lss, ntokens, ninstances =0, 0.0, 0.0, 0.0

@@ -235,10 +235,9 @@ rnnlm_sig_config = Dict(
                "conditional" => true,
                "split" => "medium",
                "splitmodifier" => "right",
-               "beam_width" => 4
+               "beam_width" => 4,
+               "writedrop" => 0.1
                )
-
-
 
 proto_sig_config = Dict(
                "model"=> ProtoVAE,
@@ -274,15 +273,17 @@ proto_sig_config = Dict(
                "maxLength"=>45,
                "calc_trainppl"=>false,
                "num_examplers"=>2,
-               "dist_thresh"=>0.6,
-               "max_cnt_nb"=>10,
+               "dist_thresh"=>0.5,
+               "max_cnt_nb"=>25,
                "task"=>SIGDataSet,
                "patiance"=>6,
                "lrdecay"=>0.5,
                "conditional" => true,
                "split" => "medium",
                "splitmodifier" => "right",
-               "beam_width" => 4
+               "beam_width" => 4,
+               "copy" => true,
+               "writedrop" => 0.1
                )
 
 
@@ -329,7 +330,9 @@ proto_yelp_config = Dict(
                "conditional" => false,
                "split" => "simple",
                "splitmodifier" => "right",
-               "beam_width" => 4
+               "beam_width" => 4,
+               "copy" => false,
+                "writedrop" => 0.1
                )
 
 recombine_scan_config = Dict(
