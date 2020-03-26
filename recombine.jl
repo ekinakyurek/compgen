@@ -101,7 +101,7 @@ end
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     aij_k = Embed(param(config["attdim"], 2*config["Kpos"]+1, init=att_weight_init, atype=arrtype))
     aij_v = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
-    dinput =  config["E"]  + config["A"]
+    dinput =  config["E"]  + 2config["Z"]
     Recombine{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                 Linear(input=config["H"]+2config["attdim"], output=config["E"]),
@@ -113,7 +113,7 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
                 Linear(input=2config["H"], output=2config["Z"]),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
-                PositionalAttention(memory=2config["H"],query=config["H"]+config["A"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
+                PositionalAttention(memory=2config["H"],query=config["H"]+2config["Z"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
         #        PositionalAttention(memory=config["H"],query=config["H"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
                 Pw{Float32}(2config["Z"], config["Kappa"]),
                 vocab,
@@ -424,11 +424,11 @@ function ind2BT(write_inds, copy_inds, H, BT)
     return (tokens=inds_masked, mask=inds_mask, sumind=findall(length.(inds) .> 0), unpadded=inds)
 end
 
-function loss(model::Recombine, data; average=false, eval=false)
+function loss(model::Recombine, data; average=false, eval=false, prior=false)
     x, xp, xpp, copyinds, unbatched = data
     B = length(first(unbatched))
     copy_indices  = cat1d(copyinds...)
-    z, Txp, Txpp = encode(model, x, xp, xpp; prior=eval)
+    z, Txp, Txpp = encode(model, x, xp, xpp; prior=false)
     output, _ = decode_train(model, x.tokens, Txp, Txpp, z)
     ytokens, ymask = x.tokens[:,2:end], x.mask[:, 2:end]
     if model.config["copy"]
@@ -511,7 +511,7 @@ function getbatch(model::Recombine, iter, B)
     return seq_x, seq_xp, seq_xpp, (xp_copymask, xpp_copymask), d
 end
 
-function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
+function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=false, trnlen=1)
     ppl = typemax(Float64)
     if !eval
         bestparams = deepcopy(parameters(model))
@@ -520,7 +520,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
         model.config["rwritedrop"] = model.config["writedrop"]
         model.config["gradnorm"]   = 0.0
     else
-        data, evalinds = create_ppl_examples(data, 200) # FIXME: 1000
+        data, evalinds = create_ppl_examples(data, 1000)
         losses = []
     end
     total_iter, lss, ntokens, ninstances =0, 0.0, 0.0, 0.0
@@ -591,6 +591,9 @@ function train!(model::Recombine, data; eval=false, dev=nothing, trnlen=1)
             nwords = sum((sum(data[first(inds)].x .> 4)+1  for inds in evalinds))
             ppl = exp(sum(s_losses .+ kl_calc(model) .+ log(trnlen))/nwords)
             @show ppl
+            if returnlist
+                s_losses, kl_calc(model), log(trnlen), data, eval_inds
+            end
         end
 #        total_iter > 400000 && break
     end
@@ -622,8 +625,12 @@ function to_json(model, fname)
     return fout
 end
 
-using Plots
-pyplot()
+
+if get(ENV,"recombine_viz",false)
+    using Plots
+    pyplot()
+end
+
 
 function viz(model, data; N=5)
     samples = sample(model, shuffle(data); N=N, sampler=sample, prior=false, beam=true, forviz=true)
@@ -919,7 +926,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
             predstr = [join(ntuple(k->trim(preds[k][i,:], vocab),length(preds)),'\n')  for i=1:b]
             predenc = [trimencoded(preds[1][i,:]) for i=1:b]
         else
-            y, preds   = decode(model, x.tokens, Txp, Txpp, z, (xp.tokens,xpp.tokens); sampler=sampler, training=false)
+            y, preds   = decode(model, x.tokens, Txp, Txpp, z; sampler=sampler, training=false)
             predstr    = mapslices(x->trim(x,vocab), preds, dims=2)
             probs2D    = ones(b,1)
             predenc    = [trimencoded(preds[i,:]) for i=1:b]
@@ -938,7 +945,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
     samples[1:N]
 end
 
-function print_ex_samples(model::Recombine, data; beam=false)
+function print_ex_samples(model::Recombine, data; beam=true)
     println("generating few examples")
     #for sampler in (sample, argmax)
     for prior in (true, false)

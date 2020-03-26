@@ -59,7 +59,7 @@ function main(config)
     if MT <: Recombine || MT <: ProtoVAE
         @show KLterm = kl_calc(model)
         if task == YelpDataSet
-            trnlen = 1558749
+            trnlen = 15091715
         else
             trnlen = length(first(pickprotos(model, processed, esets)))
             @show trnlen
@@ -97,32 +97,32 @@ function main(config)
               testppl=testppl, trainppl=trainppl, dictppl=dictppl,
               logtrnlen=log(trnlen), KL=KLterm)
     println("saving the model and samples")
-    # KnetLayers.save(saveprefix * "_results.jld2", result)
-    # if task == SCANDataSet
-    #     println("converting samples to json for downstream task")
-    #     jfile = to_json(model, samplefile)
-    #     println("copying samples to downstream location")
-    #     for i=0:9
-    #         cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
-    #     end
-    # elseif task == SIGDataSet
-    #     files = rawfiles(task, config)
-    #     lang, split = config["lang"], config["split"]
-    #     datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
-    #     write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
-    #     write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
-    # end
+    KnetLayers.save(saveprefix * "_results.jld2", result)
+    if task == SCANDataSet
+        println("converting samples to json for downstream task")
+        jfile = to_json(model, samplefile)
+        println("copying samples to downstream location")
+        for i=0:9
+            cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
+        end
+    elseif task == SIGDataSet
+        files = rawfiles(task, config)
+        lang, split = config["lang"], config["split"]
+        datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
+        write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
+        write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
+    end
 
-    # existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
-    #                  tstsamples  = samples[findall(s->in(s,words[2]), samples)],
-    #                  dictsamples = samples[findall(s->in(s,words[end]), samples)])
-    #
-    # nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
-    #                                        !in(s, words[2]) &&
-    #                                        !in(s, words[end])), samples)]
-    #
-    # println("Generating Interpolation Examples")
-    # interex  = sampleinter(model, processed[1])
+    existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
+                     tstsamples  = samples[findall(s->in(s,words[2]), samples)],
+                     dictsamples = samples[findall(s->in(s,words[end]), samples)])
+
+    nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
+                                           !in(s, words[2]) &&
+                                           !in(s, words[end])), samples)]
+
+    println("Generating Interpolation Examples")
+    interex  = sampleinter(model, processed[1])
 
     open(saveprefix * ".config","w+") do f
         println(f,config)
@@ -195,6 +195,17 @@ end
 #     end
 # end
 
+function eval_mixed(proto, rnnlm, test; p=0.1, trnlen=1)
+    proto_nllh, kl, mem, data, inds = train!(proto,test; eval=true, returnlist=true, trnlen=trnlen)
+    sentences = [data[first(ind)] for ind in inds]
+    rnn_nllh, _  = train!(rnnlm, sentences; eval=true, returnlist=true)
+    nwords = sum(map(d->sum(d.x .> 4)+1, sentences))
+    @show kl, mem, nwords, length(sentences)
+    proto_llh  = -(proto_nllh .+ (kl+mem))
+    mixed_nllh = -logsumexp(hcat(proto_llh .+ log(p), -rnn_nllh .+ log(1-p)), dims=2)
+    @show exp(sum(mixed_nllh)/nwords)
+    -mixed_nllh, proto_llh, -rnn_nllh, sentences
+end
 
 
 
@@ -289,7 +300,9 @@ proto_sig_config = Dict(
                "splitmodifier" => "right",
                "beam_width" => 4,
                "copy" => true,
-               "writedrop" => 0.1
+               "writedrop" => 0.1,
+               "attdrop" => 0.1,
+               "insert_delete_att" =>false,
                )
 
 
@@ -300,7 +313,7 @@ proto_yelp_config = Dict(
                "kill_edit"=>false,
                "attend_pr"=>0,
                "A"=>256,
-               "H"=>256,
+               "H"=>300,
                "Z"=>64,
                "E"=>300,
                "B"=>128,
@@ -315,7 +328,7 @@ proto_yelp_config = Dict(
                "aepoch"=>1, #20
                "epoch"=>8,  #40
                "Ninter"=>10,
-               "pdrop"=>0.4,
+               "pdrop"=>0.1,
                "calctrainppl"=>false,
                "Nsamples"=>100,
                "pplnum"=>1000,
@@ -338,7 +351,9 @@ proto_yelp_config = Dict(
                "splitmodifier" => "right",
                "beam_width" => 4,
                "copy" => false,
-               "writedrop" => 0.1
+               "writedrop" => 0.1,
+               "attdrop" => 0.1,
+               "insert_delete_att" =>false,
                )
 
 recombine_scan_config = Dict(
@@ -417,7 +432,7 @@ recombine_sig_config = Dict(
              "aepoch"=>1, #20
              "epoch"=>15,  #40
              "Ninter"=>10,
-             "pdrop"=>0.5,
+             "pdrop"=>0.1,
              "calctrainppl"=>false,
              "Nsamples"=>300,
              "pplnum"=>1000,
@@ -449,7 +464,16 @@ recombine_sig_config = Dict(
              )
 
 
-
+recombine_turk = Dict("Z" => 16,"Nsamples" => 300,"calctrainppl" => false,
+"maxLength" => 45,"attend_pr" => 0,"calc_trainppl" => false,"attdim" => 128,"attdrop" => 0.1,
+"split" => "medium","kl_rate" => 0.05,"max_norm" => 10.0,"optim" => Adam(0.002, 0.9, 0.999, 1.0e-8, 0, 0.0, nothing, nothing),
+"pdrop" => 0.5,"useprior" => true,"writedrop" => 0.1,"lang" => "turkish",
+"lrdecay" => 0.5,"fb_rate" => 4,"Ninter" => 10,"gradnorm" => 325.5951611838534,
+"num_examplers" => 2,"H" => 512,"concatz" => true,"conditional" => true,
+"masktags" => false,"Kpos" => 16,"task" => SIGDataSet,"patiance" => 6,
+"Nlayers" => 2,"outdrop_test" => false,
+"rwritedrop" => 0.1,"kl_weight" => 0.0,"rpatiance" => 0,
+"model" => Recombine,"aepoch" => 1,"copy" => true,"B" => 16,"outdrop" => 0.1,"pplnum" => 1000,"kill_edit" => false,"eps" => 1.0,"dist_thresh" => 0.5,"max_cnt_nb" => 5,"epoch" => 15,"splitmodifier" => "jump","beam_width" => 4,"N" => 100,"activation" => ELU,"A" => 32,"E" => 128,"positional" => true,"Kappa" => 25,"authresh" => 0.1)
 
 #
 # default_config = Dict(

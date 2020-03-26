@@ -2,7 +2,7 @@
 import KnetLayers: IndexedDict, _pack_sequence
 abstract type AbstractVAE{T} end
 
-const specialTokens   = (unk="❓", mask="⭕️", eow="🏁", bow="🎬", sep="→", iosep="#")
+const specialTokens   = (unk="<unk>", mask="<pad>", eow="</s>", bow="<s>", sep="→", iosep="#")
 const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5, iosep=6)
 
 """
@@ -126,7 +126,7 @@ end
 function parseDataLine(line::AbstractString, parser::Parser{YelpDataSet})
     #input, proto = split(replace(lowercase(line), r"[^\w\s]"=>s""),"\t")
     proto, input = split(lowercase(strip(line)), '\t')
-    return (input=filter(!isempty,split(input,' ')), proto=filter(!isempty,split(proto,' ')))
+    return (X=filter(!isempty,split(input,' ')), xp=filter(!isempty,split(proto,' ')))
 end
 
 function parseDataFile(f::AbstractString, parser::Parser)
@@ -151,8 +151,8 @@ function EncodedFormat(a::NamedTuple, v::Vocabulary{YelpDataSet})
     #limit       = length(v.parser.freewords) + length(specialTokens)
     #I = filter(x->x>limit,setdiff(si,sp)) |> collect
     #D = filter(x->x>limit,setdiff(sp,si)) |> collect
-    (input = input,
-     proto = proto,
+    (x = input,
+     xp = proto,
      ID    = inserts_deletes(input,proto))
 end
 
@@ -230,7 +230,7 @@ end
 
 function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false)
     tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
-    cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : x.surface
+    cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
 end
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
 xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
@@ -249,4 +249,57 @@ function _ser(x::Vocabulary{T},s::IdDict,::typeof(JLDMODE)) where T
         end
     end
     return s[x]
+end
+
+function split_array(array, tok)
+    index = findfirst(x->x==tok,array)
+    array[1:index-1], array[min(index+1,end):end]
+end
+
+function preprocess_jacobs_format(neighboorhoods, splits, esets, edata)
+    processed = []
+    for (set,inds) in zip(esets,splits)
+        proc_set = []
+        for (d,i) in zip(set,inds)
+            !haskey(neighboorhoods, string(i)) && continue
+            x  = xfield(SIGDataSet,d,false)
+            for xp_i in neighboorhoods[string(i)]
+                xp  = xfield(SIGDataSet,edata[xp_i[1]+1],false)
+                xpp = xfield(SIGDataSet,edata[xp_i[2]+1],false)
+                push!(proc_set, (x=x, xp=xp, xpp=xpp,  ID=inserts_deletes(x,xp)))
+            end
+        end
+        push!(processed, proc_set)
+    end
+    return processed
+end
+
+function read_from_jacobs_format(path, config)
+    fname = path*"processed.jld2"
+    if  !isfile(fname)
+        data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.json"))
+        splits = JSON.parsefile(path*"splits.json")
+        neighbourhoods = JSON.parsefile(path*"neighborhoods.json")
+        vocab  = JSON.parsefile(path*"vocab.json")
+        vocab  = convert(Dict{String,Int},vocab)
+        for (k,v) in vocab; vocab[k] = v+1; end
+        vocab   = IndexedDict(vocab)
+        strdata = [split_array(vocab[d .+ 1][3:end-1],"<sep>") for d in data]
+        strdata = map(d->(surface=String[], lemma=d[1], tags=d[2]), strdata)
+        vocab   = Vocabulary(strdata, Parser{SIGDataSet}())
+        edata   = encode(strdata,vocab)
+        splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test"]) .+ 1,  Int.(splits["val"]) .+ 1]
+        esets   = [edata[s] for s in splits]
+        processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata)
+        MT      = config["model"]
+        model   = MT(vocab, config; embeddings=nothing)
+        #processed  = preprocess(model, esets...)
+        save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
+    else
+        d = load("jacob/morph/processed.jld2")
+        processed, esets, vocab, embeddings = get(d,"data",d["esets"]), d["esets"], d["vocab"], get(d,"embeddings",nothing)
+        MT      = config["model"]
+        model  = MT(vocab, config; embeddings=embeddings)
+    end
+    return processed, esets, model
 end

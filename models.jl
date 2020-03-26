@@ -125,7 +125,7 @@ end
 
 function RNNLM(vocab::Vocabulary{D}, config::Dict; embeddings=nothing) where D <: DataSet
     RNNLM{D}(
-        LSTM(input=length(vocab),hidden=config["H"],embed=load_embed(vocab, config, embeddings),dropout=config["pdrop"],numLayers=config["Nlayers"]),
+        LSTM(input=length(vocab),hidden=config["H"],embed=load_embed(vocab, config, embeddings),numLayers=config["Nlayers"]),
         Linear(input=config["H"],output=length(vocab)),
         vocab,
         config
@@ -151,12 +151,15 @@ end
 
 
 function ProtoVAE(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
-    dinput =  config["E"] + 3config["attdim"] + config["A"]
+    att_cnt = config["insert_delete_att"] ? 3 : 1
+    config["att_cnt"] = att_cnt
+    dinput  = config["E"] + att_cnt*config["attdim"] + config["A"]
+    rnndrop = config["pdrop"]
     ProtoVAE{T}(load_embed(vocab, config, embeddings),
-                LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
-                Linear(input=3config["attdim"] + config["H"], output=config["E"]),
+                LSTM(input=dinput, hidden=config["H"], dropout=rnndrop, numLayers=config["Nlayers"]),
+                Linear(input=att_cnt*config["attdim"] + config["H"], output=config["E"]),
                 Multiply(input=config["E"], output=config["Z"]),
-                LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"]),
+                LSTM(input=config["E"], hidden=config["H"], dropout=rnndrop, bidirectional=true, numLayers=config["Nlayers"]),
                 Linear(input=2config["H"]+2config["Z"], output=config["A"]),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
@@ -510,25 +513,27 @@ isconcatz(model)   = model.config["concatz"]
 elementtype(model) = Float32
 isencatt(model)    = haskey(model, :Wμa) &&  haskey(model, :Wσa)
 
-function train!(model::RNNLM, data; dev=nothing, eval=false, o...)
+function train!(model::RNNLM, data; dev=nothing, eval=false, returnlist=false, o...)
     ppl = typemax(Float64)
     if !eval
         bestparams = deepcopy(parameters(model))
         setoptim!(model,model.config["optim"])
         model.config["rpatiance"] = model.config["patiance"]
         model.config["gradnorm"]  = 0.0
+    else
+        losses = []
     end
     total_iter = 0
     lss, ntokens, ninstances = 0.0, 0.0, 0.0
     for i=1:(eval ? 1 : model.config["epoch"])
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
-        dt  = Iterators.Stateful(shuffle(data))
+        dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
         for i in progress(msg, 1:((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             if !eval
-                J = @diff loss(model, d.x)
+                J = @diff loss(model, d)
                 if total_iter < 50
                     model.config["gradnorm"] = max(model.config["gradnorm"], 2*clip_gradient_norm_(J, Inf))
                 else
@@ -541,14 +546,21 @@ function train!(model::RNNLM, data; dev=nothing, eval=false, o...)
                     end
                 end
             else
-                J = loss(model, d.x; eval=true)
+                if returnlist
+                    ls = loss(model, d; eval=true, returnlist=true)
+                    append!(losses,ls[d.unsort])
+                    J = mean(ls)
+                else
+                    J = loss(model, d; eval=true, returnlist=false)
+                end
             end
             b           = first(d.x.batchSizes)
-            n           = length(d.x.tokens) + b
+            n           = sum(d.xpadded.mask[:,2:end])#length(d.x.tokens) + b
             lss        += value(J)*b
             ntokens    += n
             ninstances += b
         end
+
         if !isnothing(dev)
             newppl = calc_ppl(model, dev)[1]
             @show newppl
@@ -569,7 +581,11 @@ function train!(model::RNNLM, data; dev=nothing, eval=false, o...)
         if eval
             ppl = exp(lss/ntokens)
             @show ppl
+            if returnlist
+                return losses, data
+            end
         end
+        total_iter > 400000 && break
     end
     if !isnothing(dev) && !eval
         for (best, current) in zip(bestparams,parameters(model))
@@ -579,15 +595,28 @@ function train!(model::RNNLM, data; dev=nothing, eval=false, o...)
     return (ppl=ppl, ptokloss=lss/ntokens, pinstloss=lss/ninstances)
 end
 
-function loss(morph::RNNLM, x; average=false, eval=false)
+function loss(morph::RNNLM, x; average=false, eval=false, returnlist=false)
     bow, eow = specialIndicies.bow, specialIndicies.eow
-    xpadded  = pad_packed_sequence(x, bow, toend=false)
-    ygold    = pad_packed_sequence(x, eow)
-    y        = decode(morph, xpadded)
-    nllmask(y, ygold.tokens; average=false) / first(x.batchSizes)
+    #xpadded  = pad_packed_sequence(x, bow, toend=false)
+    #ygold    = pad_packed_sequence(x, eow)
+    B  = size(x.xpadded.tokens,1)
+    y        = decode(morph, x.xpadded.tokens[:,1:end-1])
+    if !returnlist
+        loss = nllmask(y, x.xpadded.tokens[:,2:end] .* x.xpadded.mask[:,2:end]; average=false) / B #first(x.batchSizes)
+    else
+        logpy = logp(y; dims=1)
+        xinds =  x.xpadded.tokens[:,2:end] .* x.xpadded.mask[:,2:end]
+        loss = []
+        for i=1:B
+            inds = fill!(similar(xinds),0)
+            inds[i,:] .= xinds[i,:]
+            linds = KnetLayers.findindices(logpy, inds)
+            push!(loss,-sum(logpy[linds]))
+        end
+    end
+    return loss
 end
 
-# FIXME: Do Multi Layer LM
 function decode(morph::RNNLM, x=nothing; sampler=sample)
     H, T = hiddensize(morph), eltype(morph)
     if isnothing(x)
@@ -604,10 +633,10 @@ function decode(morph::RNNLM, x=nothing; sampler=sample)
          end
         return preds
     else
-        B  = first(x.batchSizes)
-        h  = zeroarray(arrtype,H, B, numlayers(morph))
-        c  = fill!(similar(h),0)
-        y  = morph.decoder(x.tokens, h, c; batchSizes=x.batchSizes).y
+        B  = size(x,1)
+        #h  = zeroarray(arrtype,H, B, numlayers(morph))
+        #c  = fill!(similar(h),0)
+        y  = morph.decoder(x).y
         yf = dropout(y, morph.config["pdrop"])
         morph.output(yf)
     end
@@ -695,7 +724,7 @@ function print_ex_samples(model, data; beam=true)
     #for sampler in (sample, argmax)
     for prior in (true, false)
         println("Prior: $(prior) , attend_pr: 0.0")
-        for s in sample(model, data; N=10, sampler=argmax, prior=prior, sanitize=true, beam=beam)
+        for s in sample(model, data; N=10, sampler=sample, prior=prior, sanitize=true, beam=beam)
             println("===================")
             for field in propertynames(s)
                 println(field," : ", getproperty(s,field))
@@ -707,7 +736,7 @@ function print_ex_samples(model, data; beam=true)
     #end
 end
 
-function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1)
+function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1, returnlist=false)
     ppl = typemax(Float64)
     if !eval
         bestparams = deepcopy(parameters(model))
@@ -716,7 +745,8 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1)
         model.config["rpatiance"] = model.config["patiance"]
         model.config["gradnorm"]  = 0.0
     else
-        data, evalinds = create_ppl_examples(shuffle(data), 1000)
+        data, evalinds = create_ppl_examples(data, 1000) # FIXME: Shuffle?
+        @show length(evalinds)
         losses = []
     end
     total_iter, lss, ntokens, ninstances = 0, 0.0, 0.0, 0.0
@@ -778,13 +808,16 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1)
             nwords = sum((sum(data[first(inds)].x .> 4)+1  for inds in evalinds))
             ppl = exp(sum(s_losses .+ kl_calc(model) .+ log(trnlen))/nwords)
             @show ppl
+            if returnlist
+                return s_losses, kl_calc(model), log(trnlen), data, evalinds
+            end
         end
-        #total_iter > 400000 && break
-        if total_iter % 30000 == 0
-            GC.gc(); KnetLayers.gc()
-        end
+        total_iter > 400000 && break
+        # if total_iter % 30000 == 0
+        #     GC.gc(); KnetLayers.gc()
+        # end
     end
-    if !isnothing(dev)
+    if !isnothing(dev) && !eval
         for (best, current) in zip(bestparams,parameters(model))
             copyto!(value(current),value(best))
         end
@@ -934,10 +967,16 @@ end
 function beam_decode(model::ProtoVAE, x, proto, ID, agenda; forviz=false)
     T,B           = eltype(arrtype), size(agenda,2)
     H,V,E, attdim = model.config["H"], length(model.vocab.tokens), model.config["E"], model.config["attdim"]
-    contexts      = (batch_last(proto.context), batch_last(ID.I), batch_last(ID.D))
-    masks         = (arrtype(proto.mask'*T(-1e18)), arrtype(.!ID.Imask'*T(-1e18)), arrtype(.!ID.Dmask'*T(-1e18)))
     input         = ones(Int,B,1) .* specialIndicies.bow #BOW
-    attentions    = ntuple(k->zeroarray(arrtype,attdim,B),3)
+    if model.config["insert_delete_att"]
+        contexts   = (batch_last(proto.context), batch_last(ID.I), batch_last(ID.D))
+        masks      = (arrtype(proto.mask'*T(-1e18)),  arrtype(.!ID.Imask'*T(-1e18)), arrtype(.!ID.Dmask'*T(-1e18)))
+        attentions = ntuple(k->zeroarray(arrtype,attdim,B),3) # zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
+    else
+        contexts   = (batch_last(proto.context),)
+        masks      = (arrtype(proto.mask'*T(-1e18)),)
+        attentions = (zeroarray(arrtype,attdim,B),) # zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
+    end
     #attentions   = (zeroarray(arrtype,H,B), zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
     states        = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
     limit         = model.config["maxLength"]
@@ -959,7 +998,7 @@ function beam_search(model::ProtoVAE, traces, contexts, proto, masks, z; step=1,
         y, attentions, states, scores, weights = decode_onestep(model, attentions, states, contexts, masks, z, cinput)
         step == 1 ? negativemask!(y,1:6) : negativemask!(y,1:2,4)
         yp  = cat_copy_scores(model, y, scores[1])
-        out_soft  = convert(Array, softmax(y,dims=1))
+        out_soft  = convert(Array, softmax(yp,dims=1))
         if model.config["copy"]
             output = log.(sumprobs(copy(out_soft), proto.tokens))
         else
@@ -991,7 +1030,7 @@ function beam_search(model::ProtoVAE, traces, contexts, proto, masks, z; step=1,
     for i=1:bw
         probs      = global_srt_probs[i:i,:]
         inds       = map(s->divrem(s,bw),global_srt_inds[i,:] .- 1)
-        attentions = [hcat((result_traces[trace+1][2][k][:,bi:bi] for (bi, (trace, _)) in enumerate(inds))...) for k=1:3]
+        attentions = [hcat((result_traces[trace+1][2][k][:,bi:bi] for (bi, (trace, _)) in enumerate(inds))...) for k in model.config["att_cnt"]]
         states     = [cat((result_traces[trace+1][3][k][:,bi:bi,:] for (bi, (trace, _)) in enumerate(inds))..., dims=2) for k=1:2]
         inputs     = vcat((result_traces[trace+1][5][loc+1,bi] for (bi, (trace, loc)) in enumerate(inds))...)
         if step == 1
@@ -1002,7 +1041,7 @@ function beam_search(model::ProtoVAE, traces, contexts, proto, masks, z; step=1,
         old_preds[:,step] .= inputs
 
         if forviz
-            scores  = ntuple(k->hcat((result_traces[trace+1][6][k][:,bi:bi] for (bi, (trace, _)) in enumerate(inds))...),3)
+            scores  = ntuple(k->hcat((result_traces[trace+1][6][k][:,bi:bi] for (bi, (trace, _)) in enumerate(inds))...),model.config["att_cnt"])
             outsoft = hcat((result_traces[trace+1][7][:,bi:bi] for (bi, (trace, _)) in enumerate(inds))...)
             outsoft = reshape(outsoft,size(outsoft)...,1)
             scores  = map(s->reshape(s,size(s)...,1),scores)
@@ -1011,9 +1050,9 @@ function beam_search(model::ProtoVAE, traces, contexts, proto, masks, z; step=1,
                 scores_arr    = scores
                 output_arr    = outsoft
             else
-                old_scores    = ntuple(k->cat([result_traces[trace+1][8][k][:,bi:bi,:] for (bi, (trace, _)) in enumerate(inds)]..., dims=2),3)
+                old_scores    = ntuple(k->cat([result_traces[trace+1][8][k][:,bi:bi,:] for (bi, (trace, _)) in enumerate(inds)]..., dims=2),model.config["att_cnt"])
                 old_outputs   = cat([result_traces[trace+1][9][:,bi:bi,:] for (bi, (trace, _)) in enumerate(inds)]..., dims=2)
-                scores_arr    = ntuple(i->cat(old_scores[i],scores[i],dims=3),3)
+                scores_arr    = ntuple(i->cat(old_scores[i],scores[i],dims=3),model.config["att_cnt"])
                 output_arr    = cat(old_outputs,outsoft,dims=3)
             end
         else
@@ -1028,11 +1067,17 @@ end
 function decode(model::ProtoVAE, x, proto, ID, agenda; sampler=sample, training=true)
     T,B        = eltype(arrtype), size(agenda,2)
     H,V,E,attdim      = model.config["H"], length(model.vocab.tokens), model.config["E"], model.config["attdim"]
-    contexts   = (batch_last(proto.context), batch_last(ID.I), batch_last(ID.D))
-    masks      = (arrtype(proto.mask'*T(-1e18)),  arrtype(.!ID.Imask'*T(-1e18)), arrtype(.!ID.Dmask'*T(-1e18)))
     #h,c       = expand_hidden(model.h0,B), expand_hidden(model.c0,B)
-    input      = x[:,1:1] #BOW
-    attentions = ntuple(k->zeroarray(arrtype,attdim,B),3) # zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
+    input      = ones(Int,B,1) .* specialIndicies.bow #BOW
+    if model.config["insert_delete_att"]
+        contexts   = (batch_last(proto.context), batch_last(ID.I), batch_last(ID.D))
+        masks      = (arrtype(proto.mask'*T(-1e18)),  arrtype(.!ID.Imask'*T(-1e18)), arrtype(.!ID.Dmask'*T(-1e18)))
+        attentions = ntuple(k->zeroarray(arrtype,attdim,B),3) # zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
+    else
+        contexts   = (batch_last(proto.context),)
+        masks      = (arrtype(proto.mask'*T(-1e18)),)
+        attentions = (zeroarray(arrtype,attdim,B),) # zeroarray(arrtype,E,B), zeroarray(arrtype,E,B))
+    end
     states     = (expand_hidden(model.h0,B), expand_hidden(model.c0,B))
     limit      = (training ? size(x,2)-1 : model.config["maxLength"])
     preds      = ones(Int, B, limit)
@@ -1043,7 +1088,7 @@ function decode(model::ProtoVAE, x, proto, ID, agenda; sampler=sample, training=
          if !training
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4)
          end
-         output   = cat_copy_scores(model, output, scores[1])
+         output  = cat_copy_scores(model, output, scores[1])
          push!(outputs, output)
          if !training
             output        = convert(Array, softmax(output,dims=1))
@@ -1061,17 +1106,24 @@ function decode(model::ProtoVAE, x, proto, ID, agenda; sampler=sample, training=
 end
 
 function decode_onestep(model::ProtoVAE, attentions, states, contexts, masks, z, input)
+    attdrop = model.config["attdrop"]
     e                         = mat(model.embed(input),dims=1)
-    xi                        = vcat(e, attentions[1], attentions[2], attentions[3], z)
+    xi                        = vcat(e, attentions..., z)
     out                       = model.decoder(xi, states[1], states[2]; hy=true, cy=true)
     h, c                      = out.hidden, out.memory
     hbottom                   = h[:,:,1]
-    source_attn, source_score, source_weight = model.source_attention(contexts[1],hbottom;mask=masks[1])
-    insert_attn, insert_score, insert_weight = model.insert_attention(contexts[2],hbottom;mask=masks[2])
-    delete_attn, delete_score, delete_weight = model.delete_attention(contexts[3],hbottom;mask=masks[3])
-    y                         = model.output(vcat(out.y,source_attn,insert_attn,delete_attn))
-    yv                        = At_mul_B(model.embed.weight,y)
-    yv, (source_attn, insert_attn, delete_attn), (h,c), (source_score, insert_score, delete_score), (source_weight, insert_weight, delete_weight)
+    source_attn, source_score, source_weight = model.source_attention(contexts[1],hbottom; mask=masks[1], pdrop=attdrop)
+    if model.config["insert_delete_att"]
+        insert_attn, insert_score, insert_weight = model.insert_attention(contexts[2],hbottom;mask=masks[2], pdrop=attdrop)
+        delete_attn, delete_score, delete_weight = model.delete_attention(contexts[3],hbottom;mask=masks[3], pdrop=attdrop)
+        y  = model.output(vcat(out.y,source_attn,insert_attn,delete_attn))
+        yv = At_mul_B(model.embed.weight,y)
+        yv, (source_attn, insert_attn, delete_attn), (h,c), (source_score, insert_score, delete_score), (source_weight, insert_weight, delete_weight)
+    else
+        y  = model.output(vcat(out.y,source_attn))
+        yv = At_mul_B(model.embed.weight,y)
+        yv, (source_attn,), (h,c), (source_score,), (source_weight,)
+    end
 end
 
 function id_attention_drop(ID,attend_pr,B)
@@ -1094,7 +1146,7 @@ function loss(model::ProtoVAE, data; eval=false)
     xmasked, x_mask, xp_masked, xp_mask, ID, copyinds, unbatched = data
     B = length(first(unbatched))
     xp = (tokens=xp_masked,lengths=length.(unbatched[2]))
-    agenda, pcontext, z, ID_enc = encode(model, xp, ID; prior=eval)
+    agenda, pcontext, z, ID_enc = encode(model, xp, ID; prior=false)
     ID   = id_attention_drop(ID_enc, model.config["attend_pr"], B)
     output, _ = decode(model, xmasked, (tokens=xp_masked, mask=xp_mask, context=pcontext),  ID, agenda)
     if model.config["copy"]
@@ -1175,7 +1227,7 @@ function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sa
                 #s       = mapslices(s->join(s,'\n'),s,dims=2)
 
             else
-                y, preds   = decode(model, xmasked, (mask=xp_mask, context=pcontext), ID, agenda; sampler=sampler, training=false)
+                y, preds   = decode(model, xmasked, (tokens=xp_masked, mask=xp_mask, context=pcontext), ID, agenda; sampler=sampler, training=false)
                 predstr    = mapslices(x->trim(x,vocab), preds, dims=2)
                 probs2D    = ones(b,1)
                 predenc    = [trimencoded(preds[i,:]) for i=1:b]
@@ -1198,15 +1250,22 @@ end
 function getbatch(model::Union{RNNLM, AbstractVAE}, iter, B)
     edata = collect(Iterators.take(iter,B))
     if (b = length(edata)) != 0
-        sfs,exs, perms = first.(edata), second.(edata), last.(edata)
+        unk, mask, eow, bow,_,_ = specialIndicies
+        sfs, exs, perms = first.(edata), second.(edata), last.(edata)
+        sfs = limit_seq_length_eos_bos(sfs; maxL=model.config["maxLength"])
         r   = sortperm(sfs, by=length, rev=true)
-        xi = _pack_sequence(sfs[r])
-        xt = map(_pack_sequence,exs[r])
-        return (x=xi, examplers=xt, perm=perms[r])
-    else
-        return nothing
+        #r   = 1:length(sfs)
+        sfs = sfs[r]
+        xpadded = PadSequenceArray(sfs, pad=mask, makefalse=false)
+        xi = _pack_sequence(sfs)
+        xt = map(_pack_sequence,[exs[r]]) #FIXME: I changed exs part!!
+        return (x=xi, examplers=xt, perm=perms[r], xpadded=xpadded, unsort=sortperm(r))
     end
+    nothing
 end
+
+limit_seq_length_eos_bos(x; maxL=30) =
+    map(s->(length(s)>maxL ? [specialIndicies.bow; s[1:Int(maxL)]] : [specialIndicies.bow;s;specialIndicies.eow]) , x)
 
 function getbatch(model::ProtoVAE, iter, B)
     edata = collect(Iterators.take(iter,B))
@@ -1215,9 +1274,9 @@ function getbatch(model::ProtoVAE, iter, B)
     I, D = unzip(ID)
     unk, mask, eow, bow,_,_ = specialIndicies
     maxL = model.config["maxLength"]
-    xlimited = limit_seq_length(x;maxL=maxL)
-    x  = map(s->[bow;s;eow], xlimited)
-    xp = limit_seq_length(xp;maxL=maxL)
+    x = limit_seq_length_eos_bos(x;maxL=maxL)
+    #x  = map(s->[bow;s], xlimited)
+    xp = map(s->s, limit_seq_length(xp;maxL=maxL))
     #x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
     #xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
     #xp_packed   = _pack_sequence(xp)
