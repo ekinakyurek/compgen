@@ -1206,7 +1206,7 @@ function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sa
                 ID = id_attention_drop(ID,0.0,b)
             end
             if beam
-                preds, probs, scores, outputs  = beam_decode(model, xmasked, (tokens=xp_masked, mask=xp_mask, context=pcontext), ID, agenda)
+                preds, probs, scores, outputs  = beam_decode(model, xmasked, (tokens=xp_masked, mask=xp_mask, context=pcontext), ID, agenda; forviz=forviz)
                 if forviz
                     for i=1:b
                         @inbounds push!(samples, process_for_viz(vocab,

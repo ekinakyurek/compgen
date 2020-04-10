@@ -54,7 +54,6 @@ function (m::PositionalAttention)(memory, query; pdrop=0, mask=nothing, position
     end
 
     scores = dropout(scores, pdrop) ./ sqrt(m.attdim)
-
     if !isnothing(mask)
         scores = applymask2(scores, expand(mask, dim=3), +) # size(mask) == [T', B , 1]
     end
@@ -92,29 +91,37 @@ struct Recombine{Data}
     h0
     c0
     xp_attention::PositionalAttention
-#   xpp_attention::PositionalAttention
+    xpp_attention::PositionalAttention
     pw::Pw
     vocab::Vocabulary{Data}
     config::Dict
 end
 
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
-    aij_k = Embed(param(config["attdim"], 2*config["Kpos"]+1, init=att_weight_init, atype=arrtype))
-    aij_v = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
+    aij_k  = Embed(param(config["attdim"], 2*config["Kpos"]+1, init=att_weight_init, atype=arrtype))
+    aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
+    p1     = PositionalAttention(memory=2config["H"],query=config["H"]+2config["Z"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v)
+    if config["seperate"]
+        aij_k2 = Embed(param(config["attdim"], 2*config["Kpos"]+1, init=att_weight_init, atype=arrtype))
+        aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
+        p2 = PositionalAttention(memory=2config["H"],query=config["H"]+2config["Z"]+config["E"], att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2)
+    else
+        p2=p1
+    end
     dinput =  config["E"]  + 2config["Z"]
     Recombine{T}(load_embed(vocab, config, embeddings),
                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                 Linear(input=config["H"]+2config["attdim"], output=config["E"]),
                 Multiply(input=config["E"], output=config["Z"]),
-                LSTM(input=config["E"], hidden=config["H"],  dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"]), # NOTE: don't forget there was no rnn dropout in SCAN experiments
-                LSTM(input=config["E"], hidden=config["H"],  dropout=config["pdrop"],  bidirectional=true, numLayers=config["Nlayers"]),
+                LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"]), # NOTE: don't forget there was no rnn dropout in SCAN experiments
+                LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"]),
                 PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"]),
         #        Attention(memory=config["H"], query=config["H"], att=config["H"]),
                 Linear(input=2config["H"], output=2config["Z"]),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
                 Param(zeroarray(arrtype,config["H"],config["Nlayers"])),
-                PositionalAttention(memory=2config["H"],query=config["H"]+2config["Z"]+config["E"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
-        #        PositionalAttention(memory=config["H"],query=config["H"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v),
+                p1,
+                p2,
                 Pw{Float32}(2config["Z"], config["Kappa"]),
                 vocab,
                 config)
@@ -126,58 +133,76 @@ calc_au(model::Recombine, data)     = nothing
 sampleinter(model::Recombine, data) = nothing
 
 function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
-    dist = Levenshtein()
+    Random.seed!(m.config["seed"])
     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
     sets = map((train,devs...)) do set
             map(d->xfield(T,d,cond),set)
     end
     sets = map(unique,sets)
-    words = map(sets) do set
+    strs= map(sets) do set
         map(d->String(map(UInt8,d)),set)
     end
-    trnwords = first(words)
-    adjlists  = []
-    for (k,set) in enumerate(words)
+    trnstrs  = first(strs)
+    trnwords = first(sets)
+    adjlists = []
+    dist     = Levenshtein()
+    for (k,set) in enumerate(sets)
         adj = Dict((i,[]) for i=1:length(set))
         processed = []
-        for i in progress(1:length(set))
-            cw            = set[i]
-            neighbours    = []
-            cnt   = 0
-            inds  = randperm(length(trnwords))
-            for j in inds
-                w    = trnwords[j]
-                diff = compare(cw,w,dist)
-                if diff > thresh && diff != 1
-                    # @show "here"
-                    push!(neighbours,j)
-                    cnt+=1
-                    cnt == maxcnt && break
+        cstrs     = strs[k]
+        xp_lens, xpp_lens, total = 0.0, 0.0, 0.0
+        @inbounds for i in progress(1:length(set))
+            current_word  = set[i]
+            current_str   = cstrs[i]
+            xp_candidates = []
+            for j in randperm(length(trnwords))
+                (k==1 && j==i) && continue
+                trn_word = trnwords[j]
+                trn_str  = trnstrs[j]
+                sdiff = length(setdiff(current_word,trn_word))
+                ldiff = compare(current_str,trn_str,dist)
+                if ldiff > 0.5 && ldiff != 1.0 && sdiff > 0
+                    push!(xp_candidates,(j,ldiff))
                 end
             end
-            if isempty(neighbours)
-                push!(neighbours, rand(inds))
+            if isempty(xp_candidates)
+                if k != 1
+                    push!(xp_candidates, rand(1:length(trnwords)))
+                else
+                    continue
+                end
+            else
+                xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
             end
-            for n in neighbours
-                x′′ = []
-                ntokens = sets[1][n]
-                xtokens = sets[k][i]
-                tokens = setdiff(xtokens,ntokens)
-                cw     = String(map(UInt8,tokens))
-                cnt    = 0
-                for l in inds
+            for n in xp_candidates
+                xpp_candidates = []
+                xp_tokens      = trnwords[n]
+                diff_tokens    = setdiff(current_word,xp_tokens)
+                diff_str       = String(map(UInt8,diff_tokens))
+                for l=1:length(trnwords)
                     if l != n && l !=i
-                        w    = trnwords[l]
-                        diff = compare(cw,w,dist)
-                        if diff > thresh # 0.5
-                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                            cnt+=1
-                            cnt == 3 && break
+                        ldiff = compare(diff_str,trnstrs[l],dist)
+                        #sdiff = length(symdiff(diff_tokens,trnwords[l]))
+                        lendiff = abs(length(trnwords[l])-length(diff_tokens))
+                        if ldiff > 0.5 && lendiff < 5
+                            push!(xpp_candidates,(l,ldiff))
+                            #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+                            # cnt+=1
+                            #cnt == 3 && break
                         end
                     end
                 end
-                if cnt == 0
-                    push!(neighbours, rand(inds))
+                if isempty(xpp_candidates)
+                    if k != 1
+                        push!(processed, (x=current_word, xp=xp_tokens, xpp=rand(sets[1]))) #push!(neighbours, rand(inds))
+                    else
+                        continue
+                    end
+                else
+                    xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
+                    for xpp in xpp_candidates
+                        push!(processed, (x=current_word, xp=xp_tokens, xpp=trnwords[xpp]))
+                    end
                 end
             end
         end
@@ -307,8 +332,8 @@ end
 
 function negativemask!(y,inds...)
     T = eltype(y)
-    @inbounds for i in inds
-        y[i,:] .= -T(1.0f18)
+    for i in inds
+        @inbounds [i,:] .= -T(1.0f18)
     end
 end
 
@@ -332,10 +357,8 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true)
          if !training
              i == 1 ? negativemask!(y,1:6) : negativemask!(y,1:2,4)
          end
-
          output   = cat_copy_scores(model, y, scores...)
          push!(outputs, output)
-
          if !training
              output        = convert(Array, softmax(output,dims=1))
              if model.config["copy"]
@@ -369,12 +392,13 @@ function decode_train(model::Recombine, x, xp, xpp, z)
         positions = (nothing,nothing)
     end
     xp_attn, xp_score, _   = model.xp_attention(xp.context,htop; mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
-    xpp_attn, xpp_score, _ = model.xp_attention(xpp.context,htop;mask=masks[2], pdrop=attdrop, positions=positions[2])
+    xpp_attn, xpp_score, _ = model.xpp_attention(xpp.context,htop;mask=masks[2], pdrop=attdrop, positions=positions[2])
     if model.config["outdrop_test"]
         y               = model.output(vcat(dropout(out.y, outdrop; drop=true),xp_attn,xpp_attn))
     else
         y               = model.output(vcat(dropout(out.y, outdrop),xp_attn,xpp_attn))
     end
+    #y = dropout(model.output(vcat(out.y,xp_attn,xpp_attn)),outdrop)
     yv                  = reshape(At_mul_B(model.embed.weight,mat(y,dims=1)),V,B,limit)
     output              = cat_copy_scores(model, yv, xp_score, xpp_score)
     return output, preds
@@ -387,7 +411,7 @@ function decode_onestep(model::Recombine, states, protos, masks, z, input, posit
     out = model.decoder(xi, states...)
     hbottom = vcat(out.y,e,z)
     xp_attn, xp_score, xp_weight = model.xp_attention(protos.xp.context,hbottom;mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
-    xpp_attn, xpp_score, xpp_weight = model.xp_attention(protos.xpp.context,hbottom;mask=masks[2], pdrop=attdrop, positions=positions[2])
+    xpp_attn, xpp_score, xpp_weight = model.xpp_attention(protos.xpp.context,hbottom;mask=masks[2], pdrop=attdrop, positions=positions[2])
     ydrop = model.config["outdrop_test"] ? dropout(out.y, outdrop; drop=true) : dropout(out.y, outdrop)
     yc = model.output(vcat(ydrop,xp_attn,xpp_attn))
     yfinal = At_mul_B(model.embed.weight,yc)
@@ -474,7 +498,7 @@ function copy_indices(xp, xmasked, L::Integer, offset::Integer=0)
         @inbounds for i=1:B
             start = (t-2) * L * B + (i-1)*L + offset
             token =  xmasked[i,t]
-            if token == specialIndicies.eow || token ∉ specialIndicies
+            if token != specialIndicies.mask
                 @inbounds for i in findall(t->t==token,xp[i])
                     push!(indices, start+i)
                 end
@@ -494,7 +518,7 @@ function getbatch(model::Recombine, iter, B)
     maxL = model.config["maxLength"]
     V = length(model.vocab.tokens)
     d           = (x, xp1, xp2) = unzip(edata)
-    xp,xpp      = (xp1, xp2) #rand()>0.5 ? (xp1,xp2) : (xp2,xp1)
+    xp,xpp      = (xp1,xp2) #rand()>0.5 ? (xp1,xp2) : (xp2,xp1)
     x           = map(s->[bow;s;eow],limit_seq_length(x;maxL=maxL))
     xp          = map(s->[s;eow], limit_seq_length(xp;maxL=maxL))
     xpp         = map(s->[s;eow], limit_seq_length(xpp;maxL=maxL))
@@ -518,7 +542,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         setoptim!(model,model.config["optim"])
         model.config["rpatiance"]  = model.config["patiance"]
         model.config["rwritedrop"] = model.config["writedrop"]
-        model.config["gradnorm"]   = 0.0
+        #model.config["gradnorm"]   = 0.0
     else
         data, evalinds = create_ppl_examples(data, 1000)
         losses = []
@@ -535,11 +559,13 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
             isnothing(d) && continue
             if !eval
                 J = @diff loss(model, d)
-                if total_iter < 50
-                    model.config["gradnorm"] = max(model.config["gradnorm"], 2*clip_gradient_norm_(J, Inf))
-                else
+                # if total_iter < 50
+                #     model.config["gradnorm"] = max(model.config["gradnorm"], 2*clip_gradient_norm_(J, Inf))
+                # else
+                if model.config["gradnorm"] > 0
                     clip_gradient_norm_(J, model.config["gradnorm"])
                 end
+                # end
                 for w in parameters(J)
                     g = grad(J,w)
                     if !isnothing(g)
@@ -561,7 +587,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
             if !eval && i%500==0
                 #print_ex_samples(model, data; beam=true)
                 if !isnothing(dev)
-                     #print_ex_samples(model, dev; beam=true)
+                     print_ex_samples(model, dev; beam=true)
                      #calc_ppl(model, dev)
                 end
             end
@@ -569,12 +595,16 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         if !isnothing(dev)
             newppl = calc_ppl(model, dev; trnlen=trnlen)[1]
             if newppl > ppl-0.0025 # not a good improvement
-                lrdecay!(model, model.config["lrdecay"])
+                #lrdecay!(model, model.config["lrdecay"])
                 model.config["rpatiance"] = model.config["rpatiance"] - 1
                 println("patiance decay, rpatiance: $(model.config["rpatiance"])")
                 if model.config["rpatiance"] == 0
-                    break
+                    lrdecay!(model, model.config["lrdecay"])
+                    model.config["rpatiance"] = model.config["patiance"]
+                    #break
                 end
+            else
+                model.config["rpatiance"] = model.config["patiance"]
             end
 
             if newppl < ppl
@@ -614,9 +644,9 @@ end
 
 
 
-function to_json(model, fname)
+function to_json(parser, fname)
     lines = readlines(fname)
-    data = map(line->parseDataLine(line, model.vocab.parser), readlines(fname))
+    data = map(line->parseDataLine(line, parser), readlines(fname))
     json = map(d->JSON.lower((inp=d.input,out=d.output)), data)
     fout = fname[1:first(findfirst(".", fname))-1] * ".json"
     open(fout, "w+") do f
@@ -786,87 +816,146 @@ function std_mean(iter)
     return  σ2, μ
 end
 
-function pickprotos(model::Recombine{SCANDataSet}, processed, esets)
+function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=nothing)
     p_std, p_mean = std_mean((length(p.xp) for p in first(processed)))
-    pthresh = p_mean-sqrt(p_std)
+    pthresh = p_mean
     pp_std, pp_mean = std_mean((length(p.xpp) for p in first(processed)))
-    ppthresh = pp_mean+sqrt(pp_mean)
+    ppthresh = pp_mean
+    @show p_mean, pp_mean
     eset    = length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
     set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
     set     = unique(set)
-    inputs  = Set(map(d->join(model.vocab.tokens[d[1:findfirst(s->s==specialIndicies.sep,d)-1]],' '), set))
-    outputs = Set(map(d->join(model.vocab.tokens[d[findfirst(s->s==specialIndicies.sep,d)+1:end]],' '), set))
-    data = []
+    inputs  = map(d->d.input, eset)
+    outputs = map(d->d.output, eset)
+    data    = []
+    inpdict, outdict =  Set(Int[]), Set(Int[])
+    for d in inputs; for t in d; push!(inpdict,t); end; end
+    for d in outputs; for t in d; push!(outdict,t); end; end
+
     for i=1:length(set)
-        length(set[i]) < pthresh && continue
+        length(set[i]) > pthresh && continue
          for j=1:length(set)
             j==i && continue
             length(set[j]) > ppthresh && continue
             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
         end
     end
-    data, inputs, outputs
+    data, Set(inputs), Set(outputs), inpdict, outdict, specialIndicies.sep, nothing, nothing
 end
 
-function pickprotos(model::Recombine{SIGDataSet}, processed, esets)
-    eset    = length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
-    set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
-    set     = unique(set)
-    inputs  = map(d->join(model.vocab.tokens[d[1:findfirst(s->s==specialIndicies.sep,d)-1]],' '), set)
-    outputs = map(d->join(model.vocab.tokens[d[findfirst(s->s==specialIndicies.sep,d)+1:end]],' '), set)
-    data = []
-    for i=1:length(set)
-         p_inp = collect(inputs[i])
-         indexsep = findfirst(t->t == specialTokens.iosep[1],p_inp)
-         p_lemma, p_ts = p_inp[1:indexsep-1],p_inp[indexsep+1:end]
-         for j=1:length(set)
-            j==i && continue
-            pp_inp = collect(inputs[j])
-            indexsep = findfirst(t->t ∈ specialTokens.iosep[1],pp_inp)
-            pp_lemma, pp_ts = pp_inp[1:indexsep-1],pp_inp[indexsep+1:end]
-            if 0 < length(setdiff(p_ts,pp_ts)) < 3
-                push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
+    eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
+    vocab   = model.vocab.tokens
+    if subtask != "analyses"
+        set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
+        set     = unique(set)
+        inputs  = map(d->[d.lemma;[specialIndicies.iosep];d.tags], eset)
+        outputs = map(d->d.surface, eset)
+        tags    = map(d->d.tags, eset)
+        tagdict, inpdict, outdict = Set(Int[]), Set(Int[]), Set(Int[])
+        for d in tags; for t in d; push!(tagdict,t); end; end
+        for d in inputs; for t in d; push!(inpdict,t); end; end
+        for d in outputs; for t in d; push!(outdict,t); end; end
+        iosep = specialIndicies.sep
+        #tagdict = Set(map(d->v\\,collect(tagdict)))
+        #inputs  = map(d->join(model.vocab.tokens[d[1:findfirst(s->s==specialIndicies.sep,d)-1]],' '), set)
+        #outputs = map(d->join(model.vocab.tokens[d[findfirst(s->s==specialIndicies.sep,d)+1:end]],' '), set)
+        data = []
+        for i=1:length(set)
+             p_inp = inputs[i]
+             #indexsep = findfirst(t->t == specialTokens.iosep[1],p_inp)
+             p_lemma, p_ts = split_array(p_inp,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
+             for j=1:length(set)
+                j==i && continue
+                pp_inp = inputs[j]
+                #indexsep = findfirst(t->t ∈ specialTokens.iosep[1],pp_inp)
+                pp_lemma, pp_ts = split_array(pp_inp,specialIndicies.iosep) #pp_inp[1:indexsep-1],pp_inp[indexsep+1:end]
+                if 0 < length(setdiff(p_ts,pp_ts)) < 3
+                    push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+                end
+            end
+        end
+    else
+        set     = map(d->[d.surface;specialIndicies.sep;d.tags],eset)
+        set     = unique(set)
+        inputs  = map(d->d.surface, eset)
+        outputs = map(d->d.tags, eset)
+        inpdict, outdict =  Set(Int[]), Set(Int[])
+        iosep   = specialIndicies.sep
+        for d in inputs; for t in d; push!(inpdict,t); end; end
+        for d in outputs; for t in d; push!(outdict,t); end; end
+        #inpdict, outdict = Set(map(d->vocab[d],collect(inpdict))), Set(map(d->vocab[d],collect(outdict)))
+        tagdict = outdict
+        tags = outputs
+        data = []
+        for i=1:length(set)
+             p_lemma, p_ts = inputs[i], outputs[i]
+             for j=1:length(set)
+                j==i && continue
+                pp_lemma, pp_ts = inputs[j], outputs[j]
+                if 0 < length(setdiff(p_ts,pp_ts)) < 2
+                    push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+                end
             end
         end
     end
-    data, Set(inputs), Set(outputs)
+    data, Set(inputs), Set(outputs), inpdict, outdict, iosep, tags, tagdict
 end
 
-io_to_line(vocab::Vocabulary{SCANDataSet}, input, output) =
-    "IN: "*join(input," ")*" OUT: "*join(output," ")
+function io_to_line(vocab::Vocabulary{SCANDataSet}, input, output; subtask=nothing)
+    v = vocab.tokens
+    "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
+end
 
 
-function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output)
+function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinflection")
     #tags = Set(setdiff(vocab.inpdict.toElement,vocab.outdict.toElement))
-    indexsep = findfirst(t->t==specialTokens.iosep,input)
-    isnothing(indexsep) && return nothing
-    lemma, ts = input[1:indexsep-1], input[indexsep+1:end]
-    "$(join(lemma))\t$(join(output))\t$(join(ts,';'))"
+    v = vocab.tokens
+    if subtask == "analyses"
+        return "$(join(v[input]))\t$(join(v[output],';'))"
+    else
+        indexsep = findfirst(t->t==specialIndicies.iosep,input)
+        isnothing(indexsep) && return nothing
+        lemma, ts = input[1:indexsep-1], input[indexsep+1:end]
+        return "$(join(v[lemma]))\t$(join(v[output]))\t$(join(v[ts],';'))"
+    end
 end
 
-
-function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, K=300)
-    vocab  = model.vocab
-    data, inputs, outputs = pickprotos(model, processed, esets)
-    inpdict, outdict = vocab.inpdict.toIndex, vocab.outdict.toIndex
+Base.haskey(d::Set,el) = el ∈ d
+Base.haskey(d::IndexedDict, el) = haskey(d.toIndex, el)
+function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, K=300, subtask="reinflection")
+    vocab, task  = model.vocab, model.config["task"]
+    data, inputs, outputs, inpdict, outdict, iosep, tags, tagdict  = pickprotos(model, processed, esets; subtask=subtask)
+    #data = [processed[2];processed[3]] # when you want to cheat :)
     printed = Set(String[])
     iter = Iterators.Stateful(Iterators.cycle(shuffle(data)))
     isfile(fname) && rm(fname)
+    aug_io = []
     while length(printed) < N
         for s in sample(model, iter; N=128, prior=true, beam=true)
             if s.probs[1] > (1.2 / model.config["beam_width"])
-                tokens = model.vocab.tokens[s.sampleenc]
-                if "→" ∈ tokens && length(findall(d->d=="→", tokens)) == 1
-                    index = findfirst(t->t=="→",tokens)
-                    input,output = tokens[1:index-1], tokens[index+1:end]
+                #tokens = model.vocab.tokens[s.sampleenc]
+                tokens = s.sampleenc
+                if iosep ∈ tokens && length(findall(d->d==iosep, tokens)) == 1
+                    input,output = split_array(tokens, iosep)
                     (length(input) == 0 || length(output)==0) && continue
-                    line = io_to_line(vocab, input, output)
-                    if !isnothing(line) && line ∉ printed &&
-                       join(input,' ') ∉ inputs &&
-                       join(output,' ') ∉ outputs &&
+                    line = io_to_line(vocab, input, output; subtask=subtask)
+                    if task == SIGDataSet
+                        !(specialIndicies.iosep ∈ input && length(findall(d->d==specialIndicies.iosep, tokens)) == 1) && continue
+                        lemma, tag = split_array(input, specialIndicies.iosep)
+                        #tagstr = join(tag,';')
+                        nonexisttag = tag ∉ tags && all(i->haskey(tagdict,i), tag)
+                        #nonexisttag = true
+                    else
+                        nonexisttag = true
+                    end
+                    if !isnothing(line) && line ∉ printed && nonexisttag &&
+                       input ∉ inputs &&
+                       output ∉ outputs &&
                        all(i->haskey(inpdict,i), input) &&
                        all(i->haskey(outdict,i), output)
                         push!(printed,line)
+                        push!(aug_io, (input=vocab.tokens[input], output=vocab.tokens[output]))
                         open(fname, "a+") do f
                             println(f,line)
                         end
@@ -876,7 +965,7 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
             end
         end
     end
-    return printed
+    return printed,aug_io
 end
 
 function process_for_viz(vocab, pred, xp, xpp, scores, probs)

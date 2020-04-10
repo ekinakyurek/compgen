@@ -144,6 +144,11 @@ function EncodedFormat(a::NamedTuple, v::Vocabulary{SCANDataSet})
      output=map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.output))
 end
 
+function encode_cond(a::NamedTuple, v::Vocabulary)
+    (input=map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input),
+     output=map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.output))
+end
+
 function EncodedFormat(a::NamedTuple, v::Vocabulary{YelpDataSet})
     input       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input)
     proto       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.proto)
@@ -232,8 +237,14 @@ function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false)
     tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
     cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
 end
+
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
 xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
+
+xy_field(::Type{SCANDataSet}, x, subtask=nothing)   = x
+
+xy_field(::Type{SIGDataSet},  x, subtask="analyses") =
+    subtask == "analyses" ? (input=x.surface, output=x.tags) : (input=[x.lemma;[specialIndicies.iosep];x.tags], output=x.surface)
 
 import StringDistances: compare
 compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
@@ -253,20 +264,29 @@ end
 
 function split_array(array, tok)
     index = findfirst(x->x==tok,array)
+    array[1:index-1], array[index+1:end]
+end
+
+
+function split_array(array, f::Function)
+    index = findfirst(x->f(first(x)),array)
     array[1:index-1], array[min(index+1,end):end]
 end
 
 function preprocess_jacobs_format(neighboorhoods, splits, esets, edata)
     processed = []
+    task = SIGDataSet
     for (set,inds) in zip(esets,splits)
         proc_set = []
         for (d,i) in zip(set,inds)
             !haskey(neighboorhoods, string(i)) && continue
-            x  = xfield(SIGDataSet,d,false)
+            x  = xfield(task,d,true)
             for xp_i in neighboorhoods[string(i)]
-                xp  = xfield(SIGDataSet,edata[xp_i[1]+1],false)
-                xpp = xfield(SIGDataSet,edata[xp_i[2]+1],false)
-                push!(proc_set, (x=x, xp=xp, xpp=xpp,  ID=inserts_deletes(x,xp)))
+                xp_raw = edata[xp_i[1]+1]
+                xpp_raw = edata[xp_i[2]+1]
+                xp  = xfield(task,xp_raw,true)
+                xpp = xfield(task,xpp_raw,true)
+                push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
             end
         end
         push!(processed, proc_set)
@@ -274,32 +294,30 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata)
     return processed
 end
 
+isuppercaseornumeric(x) = isuppercase(x) || isnumeric(x)
+
 function read_from_jacobs_format(path, config)
-    fname = path*"processed.jld2"
-    if  !isfile(fname)
-        data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.json"))
-        splits = JSON.parsefile(path*"splits.json")
-        neighbourhoods = JSON.parsefile(path*"neighborhoods.json")
-        vocab  = JSON.parsefile(path*"vocab.json")
-        vocab  = convert(Dict{String,Int},vocab)
-        for (k,v) in vocab; vocab[k] = v+1; end
-        vocab   = IndexedDict(vocab)
-        strdata = [split_array(vocab[d .+ 1][3:end-1],"<sep>") for d in data]
-        strdata = map(d->(surface=String[], lemma=d[1], tags=d[2]), strdata)
-        vocab   = Vocabulary(strdata, Parser{SIGDataSet}())
-        edata   = encode(strdata,vocab)
-        splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test"]) .+ 1,  Int.(splits["val"]) .+ 1]
-        esets   = [edata[s] for s in splits]
-        processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata)
-        MT      = config["model"]
-        model   = MT(vocab, config; embeddings=nothing)
-        #processed  = preprocess(model, esets...)
-        save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
-    else
-        d = load("jacob/morph/processed.jld2")
-        processed, esets, vocab, embeddings = get(d,"data",d["esets"]), d["esets"], d["vocab"], get(d,"embeddings",nothing)
-        MT      = config["model"]
-        model  = MT(vocab, config; embeddings=embeddings)
+    data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.json"))
+    splits = JSON.parsefile(path*"splits.json")
+    neighbourhoods = JSON.parsefile(path*"neighborhoods.json")
+    vocab  = JSON.parsefile(path*"vocab.json")
+    vocab  = convert(Dict{String,Int},vocab)
+    for (k,v) in vocab; vocab[k] = v+1; end
+    vocab   = IndexedDict(vocab)
+    strdata = [split_array(vocab[d .+ 1][3:end-1],"<sep>") for d in data]
+    strdata = map(strdata) do  d
+        lemma, tags = split_array(d[1],isuppercaseornumeric)
+        (surface=d[2], lemma=lemma, tags=tags)
     end
+    #strdata = map(d->(surface=d[1], lemma=String[], tags=d[2]), strdata)
+    vocab   = Vocabulary(strdata, Parser{SIGDataSet}())
+    edata   = encode(strdata,vocab)
+    splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
+    esets   = [edata[s] for s in splits]
+    processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata)
+    MT      = config["model"]
+    model   = MT(vocab, config; embeddings=nothing)
+    #processed  = preprocess(model, esets...)
+    #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
     return processed, esets, model
 end

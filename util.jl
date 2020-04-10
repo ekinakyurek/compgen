@@ -8,7 +8,7 @@ using ClearStacktrace
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
-using Printf, Dates, JSON
+using Printf, Dates, JSON, Distributions
 ###
 #### UTILS
 ###
@@ -113,11 +113,7 @@ sample(y) = catsample(softmax(y;dims=1))
 
 function catsample(p)
     p = p ./ sum(p)
-    r = rand()
-    for c = 1:length(p)
-        r -= p[c]
-        r < 0 && return c
-    end
+    (1:length(p))[rand(Categorical(p))]
 end
 
 function finalstates(hidden)
@@ -392,21 +388,18 @@ function negativemask!(y,inds...)
 end
 
 function trimencoded(x)
-    stop = findfirst(i->i==specialIndicies.eow,x)
+    stop = findfirst(i->i==specialIndicies.eow || i==specialIndicies.mask,x)
     stop = isnothing(stop) ? length(x) : stop
     return x[1:stop-1]
 end
 
 import KnetLayers: load, save
-function save_preprocessed_data(m, data, esets, embeddings)
-    fname = prefix(m.config["task"], m.config) * "_processesed.jld2"
-    #save(fname, "data", data, "esets", esets, "tokens", m.vocab.tokens, "inpdict", m.vocab.inpdict, "outdict", m.vocab.outdict, "embeddings", embeddings)
-    save(fname, "data", data, "esets", esets, "vocab", m.vocab, "embeddings", embeddings)
+function save_preprocessed_data(proc, vocab, data, esets, embeddings)
+    save(proc, "data", data, "esets", esets, "vocab", vocab, "embeddings", embeddings)
 end
 
-function load_preprocessed_data(config)
-    task = config["task"]
-    d = load(prefix(task, config) * "_processesed.jld2")
+function load_preprocessed_data(proc_file)
+    d = load(proc_file)
     #p = Parser{task}()
     get(d,"data",d["esets"]), d["esets"], d["vocab"], get(d,"embeddings",nothing) #Vocabulary(d["tokens"], d["inpdict"], d["outdict"],p), get(d,"embeddings",nothing)
 end

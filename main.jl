@@ -2,6 +2,7 @@ include("util.jl")
 include("parser.jl")
 include("models.jl")
 include("recombine.jl")
+include("seqseqatt.jl")
 
 function limitdev!(sets, limit=1000)
     if length(sets) == 3
@@ -14,11 +15,14 @@ end
 function get_data_model(config)
     task  = config["task"]
     MT    = config["model"]
+    if haskey(config,"path") && task == SIGDataSet
+        return read_from_jacobs_format(config["path"], config)
+    end
     proc  = prefix(task, config) * "_processesed.jld2"
     @show proc
     @show isfile(proc)
     if isfile(proc)
-        processed, esets, vocab, embeddings = load_preprocessed_data(config)
+        processed, esets, vocab, embeddings = load_preprocessed_data(proc)
         m  = MT(vocab, config; embeddings=embeddings)
     else
         files = rawfiles(task, config)
@@ -38,16 +42,57 @@ function get_data_model(config)
             m     = MT(v, config)
         end
         processed  = preprocess(m, esets...)
-        save_preprocessed_data(m, processed, esets, embeddings)
+        save_preprocessed_data(proc, v, processed, esets, embeddings)
     end
     if length(processed) == 2
-        trn, dev = splitdata(processed[1],[0.8,0.2])
+        trn, dev = splitdata(shuffle(processed[1]),[0.9,0.1])
         processed = [trn,processed[2],dev]
     end
     return processed, esets, m
 end
 
-function main(config)
+
+function get_data_cond_model(augmented_data, config, esets=nothing, vocab=nothing)
+    task    = config["task"]
+    subtask = config["subtask"]
+    MT      = config["condmodel"]
+    proc  = prefix(task, config) * "_$(MT)_processesed.jld2"
+    # @show proc
+    # @show isfile(proc)
+    # if isfile(proc)
+    #     processed, esets, vocab, embeddings = load_preprocessed_data(proc)
+    #     m  = MT(vocab, config; embeddings=embeddings)
+    # else
+        if esets == nothing
+            files = rawfiles(task, config)
+            p     = Parser{task}()
+            sets  = map(f->parseDataFile(f,p), files)
+            limitdev!(sets,config["pplnum"])
+            vocab = Vocabulary(first(sets),p)
+            esets = map(s->encode(s,vocab), sets)
+        end
+        if task == YelpDataSet
+            embeddings = initializeWordEmbeddings(300; wordsDict=v.tokens.toIndex)
+            m     = MT(vocab, config; embeddings=embeddings)
+        else
+            embeddings = nothing
+            m     = MT(vocab, config)
+        end
+        processed  = preprocess(m, esets...)
+    #     save_preprocessed_data(proc, vocab, processed, esets, embeddings)
+    # end
+    #augmented_part
+    augmented = map(d->encode_cond(d,vocab),augmented_data)
+
+    if length(processed) == 2
+        trn, dev = splitdata(shuffle(processed[1]),[0.95,0.05])
+        processed = [trn,processed[2],dev]
+    end
+
+    return augmented, processed, esets, m
+end
+
+function main(config, cond_config=nothing)
     println("Preprocessing Data & Initializing Model")
     exp_time = Dates.format(Dates.now(), "mm-dd_HH.MM")
     processed, esets, model = get_data_model(config)
@@ -70,7 +115,8 @@ function main(config)
     end
 
     train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
-    samples = sample(model,processed[2])
+    #samples = sample(model,processed[2])
+    print_ex_samples(model,processed[2]; beam=true) # to diagnosis
 
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
@@ -90,46 +136,52 @@ function main(config)
     saveprefix = string("checkpoints/",task,"/",modelstr,langstr,"split_",config["split"],"_",exp_time,"_",hash(config))
     samplefile = saveprefix*"_samples.txt"
     println("generating and printing samples")
-    nonexistsamples = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"])
+    nonexistsamples, augmented_data = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"], subtask=config["subtask"])
     ex_test_data = rand(processed[1],10) #[map(field->vocab.tokens[field],d) for d in rand(processed[1],10)]
     result = (model=model, ex_test_data=ex_test_data, existsamples=existsamples,
               nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,
               testppl=testppl, trainppl=trainppl, dictppl=dictppl,
               logtrnlen=log(trnlen), KL=KLterm)
-    println("saving the model and samples")
-    KnetLayers.save(saveprefix * "_results.jld2", result)
-    if task == SCANDataSet
-        println("converting samples to json for downstream task")
-        jfile = to_json(model, samplefile)
-        println("copying samples to downstream location")
-        for i=0:9
-            cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
-        end
-    elseif task == SIGDataSet
-        files = rawfiles(task, config)
-        lang, split = config["lang"], config["split"]
-        datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
-        write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
-        write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
-    end
+    # println("saving the model and samples")
+    # KnetLayers.save(saveprefix * "_results.jld2", result)
+    # if task == SCANDataSet
+    #     println("converting samples to json for downstream task")
+    #     jfile = to_json(model.vocab.parser, samplefile)
+    #     println("copying samples to downstream location")
+    #     for i=0:9
+    #         cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
+    #     end
+    # elseif task == SIGDataSet
+    #     files = rawfiles(task, config)
+    #     lang, split = config["lang"], config["split"]
+    #     datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
+    #     write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
+    #     write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
+    # end
+    #
+    # existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
+    #                  tstsamples  = samples[findall(s->in(s,words[2]), samples)],
+    #                  dictsamples = samples[findall(s->in(s,words[end]), samples)])
+    #
+    # nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
+    #                                        !in(s, words[2]) &&
+    #                                        !in(s, words[end])), samples)]
+    # println("Generating Interpolation Examples")
+    # interex  = sampleinter(model, processed[1])
 
-    existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
-                     tstsamples  = samples[findall(s->in(s,words[2]), samples)],
-                     dictsamples = samples[findall(s->in(s,words[end]), samples)])
-
-    nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
-                                           !in(s, words[2]) &&
-                                           !in(s, words[end])), samples)]
-
-    println("Generating Interpolation Examples")
-    interex  = sampleinter(model, processed[1])
-
-    open(saveprefix * ".config","w+") do f
-        println(f,config)
-    end
-    open("sigresults.txt", "a+") do f
-        println(f, saveprefix, "\t", result.testppl, "\t", result.dictppl, "\t", result.logtrnlen,"\t", result.KL)
-    end
+    # open(saveprefix * ".config","w+") do f
+    #     println(f,config)
+    # end
+    # if task == SIGDataSet
+    #     open("sigresults.txt", "a+") do f
+    #         println(f, saveprefix, "\t", result.testppl, "\t", result.dictppl, "\t", result.logtrnlen,"\t", result.KL)
+    #     end
+    # end
+    augmented, cond_processed, cond_esets, mcond = get_data_cond_model(augmented_data, cond_config, esets, vocab)
+    cond_trn_data = Iterators.cycle(MultiIter(augmented,cond_processed[1],cond_config["paug"]))
+    train!(mcond, cond_trn_data; dev=cond_processed[end])
+    cond_eval = calc_ppl(mcond, cond_processed[2])
+    result = (mcond=mcond, augmented=augmented, cond_eval=cond_eval, result...)
     return result
 end
 
@@ -253,7 +305,10 @@ rnnlm_sig_config = Dict(
                "split" => "medium",
                "splitmodifier" => "right",
                "beam_width" => 4,
-               "writedrop" => 0.1
+               "writedrop" => 0.1,
+               "condmodel"=>Seq2Seq,
+               "subtask"=>"reinflection",
+               "paug"=>0.3
                )
 
 proto_sig_config = Dict(
@@ -303,6 +358,9 @@ proto_sig_config = Dict(
                "writedrop" => 0.1,
                "attdrop" => 0.1,
                "insert_delete_att" =>false,
+               "condmodel"=>Seq2Seq,
+               "subtask"=>"reinflection",
+               "paug"=>0.3
                )
 
 
@@ -353,7 +411,7 @@ proto_yelp_config = Dict(
                "copy" => false,
                "writedrop" => 0.1,
                "attdrop" => 0.1,
-               "insert_delete_att" =>false,
+               "insert_delete_att" =>false
                )
 
 recombine_scan_config = Dict(
@@ -362,22 +420,22 @@ recombine_scan_config = Dict(
               "kill_edit"=>false,
               "attend_pr"=>0,
               "A"=>32,
-              "H"=>256,
+              "H"=>512,
               "Z"=>16,
               "E"=>64,
               "B"=>32,
               "attdim"=>128,
               "Kpos" =>16,
               "concatz"=>true,
-              "optim"=>Adam(lr=0.001),
-              "gradnorm"=>30.0,
+              "optim"=>Adam(lr=0.002),
+              "gradnorm"=>1.0,
               "kl_weight"=>0.0,
               "kl_rate"=> 0.05,
               "fb_rate"=>4,
               "N"=>100,
               "useprior"=>true,
               "aepoch"=>1, #20
-              "epoch"=>10,  #40
+              "epoch"=>8 ,  #40
               "Ninter"=>10,
               "pdrop"=>0.5,
               "calctrainppl"=>false,
@@ -404,11 +462,17 @@ recombine_scan_config = Dict(
               "copy" => true,
               "writedrop" => 0.5,
               "outdrop" => 0.7,
-              "attdrop" => 0.1,
+              "attdrop" => 0.0,
               "outdrop_test" => true,
               "positional" => true,
-              "masktags" => false
+              "masktags" => false,
+              "condmodel"=>Seq2Seq,
+              "subtask"=>nothing,
+              "paug"=>0.01,
+              "seperate"=>true,
               )
+
+
 
 recombine_sig_config = Dict(
              "model"=> Recombine,
@@ -419,27 +483,27 @@ recombine_sig_config = Dict(
              "H"=>512,
              "Z"=>16,
              "E"=>64,
-             "B"=>16,
+             "B"=>32,
              "attdim"=>128,
              "Kpos" =>16,
              "concatz"=>true,
-             "optim"=>Adam(lr=0.002),
+             "optim"=>Adam(lr=0.001, gclip=10.0),
+             "gradnorm"=>0.0,
              "kl_weight"=>0.0,
              "kl_rate"=> 0.05,
              "fb_rate"=>4,
              "N"=>100,
-             "useprior"=>true,
              "aepoch"=>1, #20
              "epoch"=>15,  #40
              "Ninter"=>10,
-             "pdrop"=>0.1,
+             "pdrop"=>0.5,
              "calctrainppl"=>false,
              "Nsamples"=>300,
              "pplnum"=>1000,
              "authresh"=>0.1,
              "Nlayers"=>2,
-             "Kappa"=>25,
-             "max_norm"=>10.0,
+             "Kappa"=>5,
+             "max_norm"=>1.0,
              "eps"=>1.0,
              "activation"=>ELU,
              "maxLength"=>45,
@@ -455,12 +519,19 @@ recombine_sig_config = Dict(
              "splitmodifier" => "jump",
              "beam_width" => 4,
              "copy" => true,
-             "writedrop" => 0.1,
-             "outdrop" => 0.1,
+             "writedrop" => 0.3,
+             "outdrop" => 0.3,
              "attdrop" => 0.1,
-             "outdrop_test" => false,
+             "outdrop_test" => true,
              "positional" => true,
-             "masktags" => false
+             "masktags" => false,
+             "condmodel"=>Seq2Seq,
+             "rwritedrop"=>0.0,
+             "rpatiance"=>0,
+             "subtask"=>"reinflection",
+             "paug"=>0.1,
+             "seperate"=>true,
+             "path"=>"jacob/morph"
              )
 
 
