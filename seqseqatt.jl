@@ -241,7 +241,7 @@ function loss(model::Seq2Seq, data; eval=false, returnlist=false)
     output, _ = decode(model, source_enc, finals, hiddens, copy_proj, target.tokens)
     if eval
         _, preds = decode(model, source_enc, finals, hiddens, copy_proj; training=false)
-        preds = [trimencoded(preds[i,:]) for i=1:B]
+        preds = [trimencoded(preds[i,:], eos=true) for i=1:B]
         # preds,_ = beam_decode(model, source_enc, finals, hiddens)
         # preds = [trimencoded(preds[1][i,:]) for i=1:B]
     end
@@ -399,24 +399,27 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
     ppl = typemax(Float64)
     acc = 0.0
     if !eval
-    #    bestparams = deepcopy(parameters(model))
+        bestparams = model.config["bestval"] ? deepcopy(parameters(model)) : nothing
         setoptim!(model,model.config["optim"])
         model.config["rpatiance"] = model.config["patiance"]
         dt = Iterators.Stateful(data)
         n_epoch_batches = model.config["n_epoch_batches"]
-        n_epochs =  model.config["n_epoch"]
+        n_epochs = model.config["n_epoch"]
     else
         dt = Iterators.Stateful(shuffle(data))
         n_epoch_batches = ((length(dt)-1) ÷ model.config["B"])+1
         n_epochs = 1
         losses = []
     end
-    total_iter, lss, ntokens, ninstances, correct = 0, 0.0, 0.0, 0.0, 0.0
+
+    total_iter, ppl, ptokloss, pinstloss, acc, f1 = 0, .0, .0, .0, .0, .0
     for i=1:n_epochs
-        lss, ntokens, ninstances = 0.0, 0.0, 0.0
+        lss, ntokens, ninstances, correct = .0, .0, .0, .0
+        tp, fp, fn = .0, .0, .0
         #dt  = Iterators.Stateful((eval ? data : data)) #FIXME: SHUFFLE!
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f", total_iter, lss/ntokens, lss/ninstances))
-        for i in progress(msg,1:n_epoch_batches)
+        #for i in progress(msg,1:n_epoch_batches)
+        for i=1:n_epoch_batches
             d = getbatch(model,dt,model.config["B"])
             isnothing(d) && break
             b  = size(d[1].mask,1)
@@ -449,23 +452,35 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                     J, preds = loss(model, d; eval=true, returnlist=false)
                     lss += (J*n)
                 end
-                toutputs = map(x->x[2:end-1],d.unbatched[2])
+                toutputs = map(x->x[2:end],d.unbatched[2])
                 correct += sum(preds .== toutputs)
+                for i=1:b
+                    pred_here, ref = preds[i], toutputs[i]
+                    #println(join(model.vocab.tokens[pred_here],' '), join(model.vocab.tokens[ref],' '))
+                    tp += length([p for p in pred_here if p ∈ ref])
+                    fp += length([p for p in pred_here if p ∉ ref])
+                    fn += length([p for p in ref if p ∉ pred_here])
+                end
             end
             # if !eval && i%500==0
             #     print_ex_samples(model, data)
             # end
         end
         if !isnothing(dev)
-            newppl,_,_,newacc = calc_ppl(model, dev)
-            #calc_ppl(model, dev2)
-            @show newacc
-            if newacc - acc > 1e-4
-                # for (best,current) in zip(bestparams,parameters(model))
-                #     copyto!(value(best),value(current))
-                # end
-                ppl = newppl
-                acc = newacc
+            cur_ppl,_,_,cur_acc,cur_f1 = calc_ppl(model, dev)
+            @show cur_f1, f1, cur_acc, acc
+            if cur_acc > 0.4
+                calc_ppl(model, cond_processed[2])
+            end
+            if cur_acc - acc > 1e-4
+                if !isnothing(bestparams)
+                    for (best,current) in zip(bestparams,parameters(model))
+                        copyto!(value(best),value(current))
+                    end
+                end
+                ppl = cur_ppl
+                acc = cur_acc
+                f1  = cur_f1
                 model.config["rpatiance"]  = model.config["patiance"]
             else
                 model.config["rpatiance"] = model.config["rpatiance"] - 1
@@ -476,27 +491,37 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                     println("patiance decay, rpatiance: $(model.config["rpatiance"])")
                 end
             end
-        else
+        elseif !eval
             println((loss=lss/ntokens,))
         end
         if eval
-            ppl = exp(lss/ntokens); @show ppl
-            acc = correct/ninstances; @show acc
             if returnlist
                 return losses, data
             end
+            ppl  = exp(lss/ntokens);
+            acc  = correct/ninstances;
+            prec = tp / (tp + fp)
+            rec  = tp / (tp + fn)
+            if prec == 0 || rec == 0
+                f1 = 0
+            else
+                f1 = 2 * prec * rec / (prec + rec)
+            end
+            ptokloss=lss/ntokens
+            pinstloss=lss/ninstances
+            acc=correct/ninstances
         end
         #total_iter > 400000 && break
         # if total_iter % 30000 == 0
         #     GC.gc(); KnetLayers.gc()
         # end
     end
-    # if !isnothing(dev) && !eval
-    #     for (best, current) in zip(bestparams,parameters(model))
-    #         copyto!(value(current),value(best))
-    #     end
-    # end
-    return (ppl=ppl, ptokloss=lss/ntokens, pinstloss=lss/ninstances, acc=correct/ninstances)
+    if !isnothing(dev) && !eval && !isnothing(bestparams)
+        for (best, current) in zip(bestparams,parameters(model))
+            copyto!(value(current),value(best))
+        end
+    end
+    return (ppl=ppl, ptokloss=ptokloss, pinstloss=pinstloss, acc=acc, f1=f1)
 end
 
 calc_ppl(model::Seq2Seq, dev) = train!(model, dev; eval=true)
@@ -589,7 +614,8 @@ scan_cond_config = Dict(
               "model"=>Recombine,
               "conditional"=>true,
               "n_epoch_batches"=>32,
-              "n_epoch"=>150
+              "n_epoch"=>150,
+              "bestval"=>false
               )
 
 
@@ -609,19 +635,20 @@ sig_cond_config = Dict(
             "maxLength"=>45,
             "task"=>SIGDataSet,
             "patiance"=>10,
-            "lrdecay"=>0.5,
+            "lrdecay"=>0.9,
             "beam_width" => 4,
-            "copy" => true,
+            "copy" => false,
             "outdrop" => 0.0,
             "attdrop" => 0.0,
             "outdrop_test" => false,
             "positional" => false,
             "condmodel"=>Seq2Seq,
-            "subtask"=>"reinflection",
+            "subtask"=>"analyses",
             "split"=>"jacob",
             "paug"=>0.1,
             "model"=>Recombine,
             "conditional"=>true,
             "n_epoch_batches"=>65,
-            "n_epoch"=>80
+            "n_epoch"=>80,
+            "bestval"=>true
             )

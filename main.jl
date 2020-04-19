@@ -476,7 +476,7 @@ recombine_scan_config = Dict(
 
 recombine_sig_config = Dict(
              "model"=> Recombine,
-             "lang"=>"turkish",
+             "lang"=>"spanish",
              "kill_edit"=>false,
              "attend_pr"=>0,
              "A"=>32,
@@ -487,8 +487,8 @@ recombine_sig_config = Dict(
              "attdim"=>128,
              "Kpos" =>16,
              "concatz"=>true,
-             "optim"=>Adam(lr=0.001, gclip=10.0),
-             "gradnorm"=>0.0,
+             "optim"=>Adam(lr=0.002),
+             "gradnorm"=>1.0,
              "kl_weight"=>0.0,
              "kl_rate"=> 0.05,
              "fb_rate"=>4,
@@ -502,7 +502,7 @@ recombine_sig_config = Dict(
              "pplnum"=>1000,
              "authresh"=>0.1,
              "Nlayers"=>2,
-             "Kappa"=>5,
+             "Kappa"=>1.0,
              "max_norm"=>1.0,
              "eps"=>1.0,
              "activation"=>ELU,
@@ -521,30 +521,30 @@ recombine_sig_config = Dict(
              "copy" => true,
              "writedrop" => 0.3,
              "outdrop" => 0.3,
-             "attdrop" => 0.1,
+             "attdrop" => 0.3,
              "outdrop_test" => true,
              "positional" => true,
              "masktags" => false,
              "condmodel"=>Seq2Seq,
              "rwritedrop"=>0.0,
              "rpatiance"=>0,
-             "subtask"=>"reinflection",
+             "subtask"=>"analyses",
              "paug"=>0.1,
              "seperate"=>true,
-             "path"=>"jacob/morph"
+             "path"=>"jacob/morph/"
              )
 
 
-recombine_turk = Dict("Z" => 16,"Nsamples" => 300,"calctrainppl" => false,
-"maxLength" => 45,"attend_pr" => 0,"calc_trainppl" => false,"attdim" => 128,"attdrop" => 0.1,
-"split" => "medium","kl_rate" => 0.05,"max_norm" => 10.0,"optim" => Adam(0.002, 0.9, 0.999, 1.0e-8, 0, 0.0, nothing, nothing),
-"pdrop" => 0.5,"useprior" => true,"writedrop" => 0.1,"lang" => "turkish",
-"lrdecay" => 0.5,"fb_rate" => 4,"Ninter" => 10,"gradnorm" => 325.5951611838534,
-"num_examplers" => 2,"H" => 512,"concatz" => true,"conditional" => true,
-"masktags" => false,"Kpos" => 16,"task" => SIGDataSet,"patiance" => 6,
-"Nlayers" => 2,"outdrop_test" => false,
-"rwritedrop" => 0.1,"kl_weight" => 0.0,"rpatiance" => 0,
-"model" => Recombine,"aepoch" => 1,"copy" => true,"B" => 16,"outdrop" => 0.1,"pplnum" => 1000,"kill_edit" => false,"eps" => 1.0,"dist_thresh" => 0.5,"max_cnt_nb" => 5,"epoch" => 15,"splitmodifier" => "jump","beam_width" => 4,"N" => 100,"activation" => ELU,"A" => 32,"E" => 128,"positional" => true,"Kappa" => 25,"authresh" => 0.1)
+# recombine_turk = Dict("Z" => 16,"Nsamples" => 300,"calctrainppl" => false,
+# "maxLength" => 45,"attend_pr" => 0,"calc_trainppl" => false,"attdim" => 128,"attdrop" => 0.1,
+# "split" => "medium","kl_rate" => 0.05,"max_norm" => 10.0,"optim" => Adam(0.002, 0.9, 0.999, 1.0e-8, 0, 0.0, nothing, nothing),
+# "pdrop" => 0.5,"useprior" => true,"writedrop" => 0.1,"lang" => "turkish",
+# "lrdecay" => 0.5,"fb_rate" => 4,"Ninter" => 10,"gradnorm" => 325.5951611838534,
+# "num_examplers" => 2,"H" => 512,"concatz" => true,"conditional" => true,
+# "masktags" => false,"Kpos" => 16,"task" => SIGDataSet,"patiance" => 6,
+# "Nlayers" => 2,"outdrop_test" => false,
+# "rwritedrop" => 0.1,"kl_weight" => 0.0,"rpatiance" => 0,
+# "model" => Recombine,"aepoch" => 1,"copy" => true,"B" => 16,"outdrop" => 0.1,"pplnum" => 1000,"kill_edit" => false,"eps" => 1.0,"dist_thresh" => 0.5,"max_cnt_nb" => 5,"epoch" => 15,"splitmodifier" => "jump","beam_width" => 4,"N" => 100,"activation" => ELU,"A" => 32,"E" => 128,"positional" => true,"Kappa" => 25,"authresh" => 0.1)
 
 #
 # default_config = Dict(

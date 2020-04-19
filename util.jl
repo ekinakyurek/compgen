@@ -4,7 +4,7 @@ using KnetLayers, Distributions
 import KnetLayers: Knet, nllmask, findindices, _batchSizes2indices, IndexedDict, _pack_sequence
 const parameters = KnetLayers.params
 import Knet.SpecialFunctions: besseli,loggamma
-using ClearStacktrace
+#using ClearStacktrace
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
@@ -387,10 +387,10 @@ function negativemask!(y,inds...)
     end
 end
 
-function trimencoded(x)
+function trimencoded(x; eos=false)
     stop = findfirst(i->i==specialIndicies.eow || i==specialIndicies.mask,x)
     stop = isnothing(stop) ? length(x) : stop
-    return x[1:stop-1]
+    eos ? x[1:stop] : x[1:stop-1]
 end
 
 import KnetLayers: load, save

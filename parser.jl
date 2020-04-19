@@ -237,14 +237,14 @@ function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false)
     tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
     cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
 end
-
+xfield_analyses(::Type{SIGDataSet},  x, cond::Bool=true) = [x.surface; [specialIndicies.sep]; x.lemma; [specialIndicies.iosep]; x.tags]
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
 xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
 
 xy_field(::Type{SCANDataSet}, x, subtask=nothing)   = x
 
 xy_field(::Type{SIGDataSet},  x, subtask="analyses") =
-    subtask == "analyses" ? (input=x.surface, output=x.tags) : (input=[x.lemma;[specialIndicies.iosep];x.tags], output=x.surface)
+    subtask == "analyses" ? (input=x.surface, output=[x.lemma; [specialIndicies.iosep]; x.tags]) : (input=[x.lemma;[specialIndicies.iosep];x.tags], output=x.surface)
 
 import StringDistances: compare
 compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
@@ -273,19 +273,20 @@ function split_array(array, f::Function)
     array[1:index-1], array[min(index+1,end):end]
 end
 
-function preprocess_jacobs_format(neighboorhoods, splits, esets, edata)
+function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask="reinflection")
     processed = []
     task = SIGDataSet
+    get_xfield = subtask == "reinflection" ?  xfield : xfield_analyses
     for (set,inds) in zip(esets,splits)
         proc_set = []
         for (d,i) in zip(set,inds)
             !haskey(neighboorhoods, string(i)) && continue
-            x  = xfield(task,d,true)
+            x  = get_xfield(task,d,true)
             for xp_i in neighboorhoods[string(i)]
                 xp_raw = edata[xp_i[1]+1]
                 xpp_raw = edata[xp_i[2]+1]
-                xp  = xfield(task,xp_raw,true)
-                xpp = xfield(task,xpp_raw,true)
+                xp  = get_xfield(task,xp_raw,true)
+                xpp = get_xfield(task,xpp_raw,true)
                 push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
             end
         end
@@ -296,7 +297,8 @@ end
 
 isuppercaseornumeric(x) = isuppercase(x) || isnumeric(x)
 
-function read_from_jacobs_format(path, config)
+function read_from_jacobs_format(path, config; Kex=2)
+    println("reading from $path")
     data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.json"))
     splits = JSON.parsefile(path*"splits.json")
     neighbourhoods = JSON.parsefile(path*"neighborhoods.json")
@@ -314,7 +316,11 @@ function read_from_jacobs_format(path, config)
     edata   = encode(strdata,vocab)
     splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
     esets   = [edata[s] for s in splits]
-    processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata)
+    unique_test_tags = shuffle(unique([d.tags for d in esets[2]]))
+    unique_val_tags  = shuffle(unique([d.tags for d in esets[3]]))
+    leaved_tags      = [unique_test_tags[1:Kex];unique_val_tags[1:Kex]]
+    filter!(d->d.tags ∈ leaved_tags, esets[1])
+    processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
     MT      = config["model"]
     model   = MT(vocab, config; embeddings=nothing)
     #processed  = preprocess(model, esets...)

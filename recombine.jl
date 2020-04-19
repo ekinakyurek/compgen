@@ -70,7 +70,7 @@ function (m::PositionalAttention)(memory, query; pdrop=0, mask=nothing, position
         end
         values += pvalues
     end
-
+    #values = dropout(values, 0.3) # FIXME
     if  ndims(query) == 2
         mat(values, dims=1), mat(scores,dims=1), mat(weights, dims=1)
     else
@@ -131,6 +131,8 @@ calc_ppl(model::Recombine, data; trnlen=1)    = train!(model, data; eval=true, d
 calc_mi(model::Recombine, data)     = nothing
 calc_au(model::Recombine, data)     = nothing
 sampleinter(model::Recombine, data) = nothing
+
+
 
 function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
     Random.seed!(m.config["seed"])
@@ -337,7 +339,7 @@ function negativemask!(y,inds...)
     end
 end
 
-function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true)
+function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true, mixsampler=false, temp=0.2)
     T,B        = eltype(arrtype), size(z,2)
     H,V,E      = model.config["H"], length(model.vocab.tokens), model.config["E"]
     Kpos       = model.config["Kpos"]
@@ -349,6 +351,7 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true)
     preds      = ones(Int, B, limit)
     outputs    = []
     positions  = (nothing,nothing)
+    is_input_generated = falses(B)
     for i=1:limit
          if model.config["positional"]
              positions = map(p->position_calc(size(p.tokens,2), i; K=Kpos), protos)
@@ -360,12 +363,19 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=sample, training=true)
          output   = cat_copy_scores(model, y, scores...)
          push!(outputs, output)
          if !training
-             output        = convert(Array, softmax(output,dims=1))
+             tempout   = convert(Array, exp.(logp(output ./ temp, dims=1)))
              if model.config["copy"]
-                 output        = sumprobs(output, protos[1].tokens, protos[2].tokens)
+                 tempout  = sumprobs(tempout, protos[1].tokens, protos[2].tokens)
              end
-             preds[:,i]    = vec(mapslices(sampler, output, dims=1))
-             input         = preds[:,i:i]
+             if mixsampler
+                 s1 = vec(mapslices(catsample, tempout, dims=1))
+                 s2 = vec(mapslices(argmax, tempout, dims=1))
+                 preds[:,i] = [(gen ? s2[k] : s1[k])  for (k,gen) in enumerate(is_input_generated)]
+             else
+                 preds[:,i]  = vec(mapslices(sampler, tempout, dims=1))
+             end
+             input = preds[:,i:i]
+             is_input_generated .=  (is_input_generated .| (preds[:,i] .== specialIndicies.sep))
          else
              input         = x[:,i+1:i+1]
          end
@@ -713,13 +723,44 @@ function attension_visualize(vocab, probs, scores, xp, xpp, x; prefix="")
     Plots.savefig(p, prefix*"_attention_map.pdf")
 end
 
+function pickprotos_conditional(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
+    dist   = Levenshtein()
+    trndata = esets[1]
+    trnstr  = map(d->String(map(UInt8,d.surface)),trndata)
+    data = []
+    for k=2:length(esets)
+        processed = []
+        cur_test  = esets[k]
+        for i=1:length(cur_test)
+            cur_input = cur_test[i].surface
+            cur_str   = map(UInt8,cur_input)
+            neihgbours = []
+            for j=1:length(trnstr)
+                trn_ex_str = trnstr[j]
+                diff = compare(cur_str,trn_ex_str,dist)
+                push!(neighbours,(j,diff))
+            end
+            xp = trndata[findmax(second.(neighbours))[2]]
+            for j=1:length(trnstr)
+                xpp     = trndata[j]
+                xpp_str = trnstr[j]
+                difftag = setdiff(cur_input, xp.surface, xpp.surface)
+                trn_ex_str = trnstr[j]
+                diff = compare(cur_str,trn_ex_str,dist)
+                push!(neighbours,(j,diff))
+            end
+        end
+    end
+    data
+end
+
 function preprocess(m::Recombine{SIGDataSet}, train, devs...)
     println("preprocessing SIGDataSet")
     T = SIGDataSet
     dist = Levenshtein()
     thresh, cond, maxcnt, masktags =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"], m.config["masktags"]
     sets = map((train,devs...)) do set
-            map(d->(x=xfield(T,d,cond; masktags=masktags),lemma=d.lemma, surface=d.surface, tags=(masktags ?  fill!(similar(d.tags),specialIndicies.mask) : d.tags)),set)
+            map(d->(x=xfield(T,d,cond;masktags=masktags), lemma=d.lemma, surface=d.surface, tags=(masktags ?  fill!(similar(d.tags),specialIndicies.mask) : d.tags)),set)
     end
     sets = map(set->unique(s->s.x,set),sets)
 
@@ -831,7 +872,6 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
     inpdict, outdict =  Set(Int[]), Set(Int[])
     for d in inputs; for t in d; push!(inpdict,t); end; end
     for d in outputs; for t in d; push!(outdict,t); end; end
-
     for i=1:length(set)
         length(set[i]) > pthresh && continue
          for j=1:length(set)
@@ -840,132 +880,100 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
         end
     end
-    data, Set(inputs), Set(outputs), inpdict, outdict, specialIndicies.sep, nothing, nothing
+    data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing
 end
 
-function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
-    eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
-    vocab   = model.vocab.tokens
-    if subtask != "analyses"
-        set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
-        set     = unique(set)
-        inputs  = map(d->[d.lemma;[specialIndicies.iosep];d.tags], eset)
-        outputs = map(d->d.surface, eset)
-        tags    = map(d->d.tags, eset)
-        tagdict, inpdict, outdict = Set(Int[]), Set(Int[]), Set(Int[])
-        for d in tags; for t in d; push!(tagdict,t); end; end
-        for d in inputs; for t in d; push!(inpdict,t); end; end
-        for d in outputs; for t in d; push!(outdict,t); end; end
-        iosep = specialIndicies.sep
-        #tagdict = Set(map(d->v\\,collect(tagdict)))
-        #inputs  = map(d->join(model.vocab.tokens[d[1:findfirst(s->s==specialIndicies.sep,d)-1]],' '), set)
-        #outputs = map(d->join(model.vocab.tokens[d[findfirst(s->s==specialIndicies.sep,d)+1:end]],' '), set)
-        data = []
-        for i=1:length(set)
-             p_inp = inputs[i]
-             #indexsep = findfirst(t->t == specialTokens.iosep[1],p_inp)
-             p_lemma, p_ts = split_array(p_inp,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
-             for j=1:length(set)
-                j==i && continue
-                pp_inp = inputs[j]
-                #indexsep = findfirst(t->t ∈ specialTokens.iosep[1],pp_inp)
-                pp_lemma, pp_ts = split_array(pp_inp,specialIndicies.iosep) #pp_inp[1:indexsep-1],pp_inp[indexsep+1:end]
-                if 0 < length(setdiff(p_ts,pp_ts)) < 3
-                    push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
-                end
-            end
-        end
-    else
-        set     = map(d->[d.surface;specialIndicies.sep;d.tags],eset)
-        set     = unique(set)
-        inputs  = map(d->d.surface, eset)
-        outputs = map(d->d.tags, eset)
-        inpdict, outdict =  Set(Int[]), Set(Int[])
-        iosep   = specialIndicies.sep
-        for d in inputs; for t in d; push!(inpdict,t); end; end
-        for d in outputs; for t in d; push!(outdict,t); end; end
-        #inpdict, outdict = Set(map(d->vocab[d],collect(inpdict))), Set(map(d->vocab[d],collect(outdict)))
-        tagdict = outdict
-        tags = outputs
-        data = []
-        for i=1:length(set)
-             p_lemma, p_ts = inputs[i], outputs[i]
-             for j=1:length(set)
-                j==i && continue
-                pp_lemma, pp_ts = inputs[j], outputs[j]
-                if 0 < length(setdiff(p_ts,pp_ts)) < 2
-                    push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
-                end
+
+function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="analyses")
+    eset  = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
+    vocab = model.vocab.tokens
+    get_xfield = subtask == "reinflection" ?  xfield : xfield_analyses
+    set    = map(d->get_xfield(SIGDataSet,d,true),eset)
+    output = map(d->[d.lemma;[specialIndicies.iosep];d.tags], eset)
+    input  = map(d->d.surface, eset)
+    tags    = map(d->d.tags, eset)
+    if subtask == "reinflection"
+        input, output = output, input
+    end
+    dicts = ntuple(Set(Int[]),3)
+    for (i,tset) in enumerate((inputs,outputs,tags))
+        dict = dicts[i]; for t in tset; push!(dicts,t); end
+    end
+    for i=1:length(set)
+         p_inp, p_out = inputs[i], outputs[i]
+         lemmaptags = subtask == "reinflection" ? p_inp : p_pout
+         p_lemma, p_ts = split_array(lemmaptags,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
+         for j=1:length(set)
+            j==i && continue
+            pp_inp, pp_out = inputs[j], outputs[j]
+            lemmaptags = subtask == "reinflection" ? pp_inp : pp_pout
+            pp_lemma, pp_ts = split_array(lemmaptags,specialIndicies.iosep)
+            if 0 < length(setdiff(p_ts,pp_ts)) < 3
+                push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
             end
         end
     end
-    data, Set(inputs), Set(outputs), inpdict, outdict, iosep, tags, tagdict
+    data, Set(inputs), Set(outputs), dicts[1], dicts[2], Set(tags), dicts[3]
 end
 
 function io_to_line(vocab::Vocabulary{SCANDataSet}, input, output; subtask=nothing)
-    v = vocab.tokens
-    "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
+    v = vocab.tokens; "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
 end
 
 
 function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinflection")
-    #tags = Set(setdiff(vocab.inpdict.toElement,vocab.outdict.toElement))
     v = vocab.tokens
     if subtask == "analyses"
-        return "$(join(v[input]))\t$(join(v[output],';'))"
+        lemma, ts = split_array(output,specialIndicies.iosep)
+        "$(join(v[lemma]))\t$(join(v[input]))\t$(join(v[ts],';'))"
     else
-        indexsep = findfirst(t->t==specialIndicies.iosep,input)
-        isnothing(indexsep) && return nothing
-        lemma, ts = input[1:indexsep-1], input[indexsep+1:end]
-        return "$(join(v[lemma]))\t$(join(v[output]))\t$(join(v[ts],';'))"
+        lemma, ts = split_array(input,specialIndicies.iosep)
+        "$(join(v[lemma]))\t$(join(v[output]))\t$(join(v[ts],';'))"
     end
 end
 
 Base.haskey(d::Set,el) = el ∈ d
 Base.haskey(d::IndexedDict, el) = haskey(d.toIndex, el)
-function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, K=300, subtask="reinflection")
-    vocab, task  = model.vocab, model.config["task"]
-    data, inputs, outputs, inpdict, outdict, iosep, tags, tagdict  = pickprotos(model, processed, esets; subtask=subtask)
-    #data = [processed[2];processed[3]] # when you want to cheat :)
+
+function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, K=300, mixsampler=false)
+    vocab, task, subtask  = model.vocab, model.config["task"], get(model.config, "subtask", nothing)
+    data, inputs, outputs, inpdict, outdict, tags, tagdict  = pickprotos(model, processed, esets; subtask=subtask)
+    nonexisttag = true
+    iosep = specialIndicies.sep
+    #data = [processed[2];processed[3]] # when you want to cheat!
     printed = Set(String[])
     iter = Iterators.Stateful(Iterators.cycle(shuffle(data)))
     isfile(fname) && rm(fname)
     aug_io = []
     while length(printed) < N
-        for s in sample(model, iter; N=128, prior=true, beam=true)
+        for s in sample(model, iter; N=128, prior=true, beam=true, mixsampler=mixsampler)
             if s.probs[1] > (1.2 / model.config["beam_width"])
-                #tokens = model.vocab.tokens[s.sampleenc]
                 tokens = s.sampleenc
                 if iosep ∈ tokens && length(findall(d->d==iosep, tokens)) == 1
-                    input,output = split_array(tokens, iosep)
+                    input, output = split_array(tokens, iosep)
                     (length(input) == 0 || length(output)==0) && continue
-                    line = io_to_line(vocab, input, output; subtask=subtask)
                     if task == SIGDataSet
-                        !(specialIndicies.iosep ∈ input && length(findall(d->d==specialIndicies.iosep, tokens)) == 1) && continue
-                        lemma, tag = split_array(input, specialIndicies.iosep)
-                        #tagstr = join(tag,';')
-                        nonexisttag = tag ∉ tags && all(i->haskey(tagdict,i), tag)
-                        #nonexisttag = true
-                    else
-                        nonexisttag = true
+                        lemmeptags = subtask == "reinflection" ? input : output
+                        !(specialIndicies.iosep ∈ lemmaptags && length(findall(d->d==specialIndicies.iosep, tokens)) == 1) && continue
+                        lemma, tag = split_array(lemmaptags, specialIndicies.iosep)
+                        nonexisttag =  tag ∉ tags && all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
                     end
-                    if !isnothing(line) && line ∉ printed && nonexisttag &&
-                       input ∉ inputs &&
-                       output ∉ outputs &&
-                       all(i->haskey(inpdict,i), input) &&
-                       all(i->haskey(outdict,i), output)
-                        push!(printed,line)
-                        push!(aug_io, (input=vocab.tokens[input], output=vocab.tokens[output]))
-                        open(fname, "a+") do f
-                            println(f,line)
-                        end
-                        length(printed) == N && break
+                    line = io_to_line(vocab, input, output; subtask=subtask)
+                    if line ∉ printed && nonexisttag &&
+                       input ∉ inputs && output ∉ outputs &&
+                       all(i->haskey(inpdict,i), input) && all(i->haskey(outdict,i), output)
+                       push!(printed,line)
+                       push!(aug_io, (input=vocab.tokens[input], output=vocab.tokens[output]))
+                       open(fname, "a+") do f
+                           println(f,line)
+                       end
+                       length(printed) == N && break
                     end
                 end
             end
         end
     end
-    return printed,aug_io
+    return printed, aug_io
 end
 
 function process_for_viz(vocab, pred, xp, xpp, scores, probs)
@@ -981,7 +989,7 @@ function process_for_viz(vocab, pred, xp, xpp, scores, probs)
 end
 
 
-function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=sample, prior=true, beam=true, forviz=false)
+function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=sample, prior=true, beam=true, forviz=false, mixsampler=false)
     if !(dataloader isa Base.Iterators.Stateful)
         dataloader = Iterators.Stateful(dataloader)
     end
@@ -997,7 +1005,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
         x, xp, xpp, copymasks, unbatched = d
         b = length(first(unbatched))
         z, Txp, Txpp = encode(model, x, xp, xpp; prior=prior)
-        if beam
+        if beam && !mixsampler # FIXME: You can do beam with mixsampler
             preds, probs, scores, outputs  = beam_decode(model, x.tokens, Txp, Txpp, z; forviz=forviz)
             if forviz
                 for i=1:b
@@ -1015,7 +1023,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
             predstr = [join(ntuple(k->trim(preds[k][i,:], vocab),length(preds)),'\n')  for i=1:b]
             predenc = [trimencoded(preds[1][i,:]) for i=1:b]
         else
-            y, preds   = decode(model, x.tokens, Txp, Txpp, z; sampler=sampler, training=false)
+            y, preds   = decode(model, x.tokens, Txp, Txpp, z; sampler=sampler, training=false, mixsampler=mixsampler)
             predstr    = mapslices(x->trim(x,vocab), preds, dims=2)
             probs2D    = ones(b,1)
             predenc    = [trimencoded(preds[i,:]) for i=1:b]
@@ -1034,12 +1042,12 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
     samples[1:N]
 end
 
-function print_ex_samples(model::Recombine, data; beam=true)
+function print_ex_samples(model::Recombine, data; beam=true, mixsampler=false)
     println("generating few examples")
     #for sampler in (sample, argmax)
     for prior in (true, false)
         println("Prior: $(prior) , attend_pr: 0.0")
-        for s in sample(model, data; N=10, sampler=argmax, prior=prior, beam=beam)
+        for s in sample(model, data; N=10, sampler=argmax, prior=prior, beam=beam, mixsampler=mixsampler)
             println("===================")
             for field in propertynames(s)
                 println(field," : ", getproperty(s,field))
