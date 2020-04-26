@@ -1,14 +1,9 @@
- using LibGit2, Random, KnetLayers, StringDistances
+using LibGit2, Random, KnetLayers, StringDistances
 import KnetLayers: IndexedDict, _pack_sequence
-abstract type AbstractVAE{T} end
 
-const specialTokens   = (unk="<unk>", mask="<pad>", eow="</s>", bow="<s>", sep="→", iosep="#")
-const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5, iosep=6)
+const specialTokens   = (unk="<unk>", mask="<pad>", eow="</s>", bow="<s>", sep="→", iosep="#", copy="<copy>")
+const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5, iosep=6, copy=7)
 
-"""
-    DataSet
-    Abstract type for datasets
-"""
 abstract type DataSet; end
 abstract type SIGDataSet <: DataSet; end
 abstract type SCANDataSet <: DataSet; end
@@ -44,6 +39,7 @@ function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet))
     end
     return true
 end
+
 download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet)) =
     !isdir(path) ? LibGit2.clone("https://github.com/brendenlake/SCAN", path) : true
 
@@ -70,11 +66,12 @@ end
 
 prefix(dataset::Type{SCANDataSet}, opt) =
     joinpath(defaultpath(SCANDataSet), string(opt["model"],"_",opt["task"],"_",opt["split"],"_condition_",opt["conditional"]))
+
 prefix(dataset::Type{SIGDataSet}, opt) =
     joinpath(defaultpath(SIGDataSet), string(opt["model"],"_",opt["task"],"_",opt["lang"],"_condition_",opt["conditional"],"_",opt["split"]))
+
 prefix(dataset::Type{YelpDataSet}, opt) =
     joinpath(defaultpath(YelpDataSet), string(opt["model"], "_", opt["task"]))
-
 
 function rawfiles(dataset::Type{YelpDataSet}, config)
     ["data/Yelp/train.tsv",
@@ -111,7 +108,7 @@ struct Vocabulary{MyDataSet,T}
 end
 
 Base.length(v::Vocabulary) = length(v.tokens)
-collectstr(str::AbstractString) = map(string,collect(str))
+
 function parseDataLine(line::AbstractString, parser::Parser{SIGDataSet})
     lemma, surface, tokens = split(line, '\t')
     (surface=collectstr(surface), lemma=collectstr(lemma), tags=split(tokens,';'))
@@ -153,16 +150,13 @@ function EncodedFormat(a::NamedTuple, v::Vocabulary{YelpDataSet})
     input       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input)
     proto       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.proto)
     si,sp       = Set(input), Set(proto)
-    #limit       = length(v.parser.freewords) + length(specialTokens)
-    #I = filter(x->x>limit,setdiff(si,sp)) |> collect
-    #D = filter(x->x>limit,setdiff(sp,si)) |> collect
-    (x = input,
+    (x  = input,
      xp = proto,
-     ID    = inserts_deletes(input,proto))
+     ID = inserts_deletes(input,proto))
 end
 
 encode(line::NamedTuple, v::Vocabulary) = EncodedFormat(line,v)
-encode(data::Vector, v::Vocabulary)     = map(l->encode(l,v),data)
+encode(data::Vector, v::Vocabulary)     = map(l->encode(l,v), data)
 
 function Vocabulary(data::Vector, parser::Parser{SIGDataSet})
     inpdict, outdict = StrDict(), StrDict()
@@ -233,97 +227,30 @@ function Vocabulary(data::Vector, parser::Parser{YelpDataSet})
     Vocabulary{YelpDataSet, String}(IndexedDict(inpdict), IndexedDict(inpdict), IndexedDict(inpdict), parser)
 end
 
-function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false)
+function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false, subtask="reinflection")
     tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
-    cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
+    if subtask=="reinflection"
+        cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
+    else
+        cond ? [x.surface;[specialIndicies.sep];x.lemma;[specialIndicies.iosep];x.tags] : x.surface
+    end
 end
-xfield_analyses(::Type{SIGDataSet},  x, cond::Bool=true) = [x.surface; [specialIndicies.sep]; x.lemma; [specialIndicies.iosep]; x.tags]
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
 xfield(::Type{YelpDataSet}, x, cond::Bool=true) = x.input
 
 xy_field(::Type{SCANDataSet}, x, subtask=nothing)   = x
 
 xy_field(::Type{SIGDataSet},  x, subtask="analyses") =
-    subtask == "analyses" ? (input=x.surface, output=[x.lemma; [specialIndicies.iosep]; x.tags]) : (input=[x.lemma;[specialIndicies.iosep];x.tags], output=x.surface)
+    subtask == "analyses" ? (input=x.surface, output=[x.lemma;x.tags]) : (input=[x.lemma;x.tags], output=x.surface)
 
-import StringDistances: compare
-compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
-compare(x::Vector{Int},    y::AbstractString, dist) = compare(x,String(map(UInt8,y)),dist)
-compare(x::AbstractString, y::Vector{Int},    dist) = compare(String(map(UInt8,x)),y,dist)
-
+# To save regex field in the parser.
 function _ser(x::Vocabulary{T},s::IdDict,::typeof(JLDMODE)) where T
     if !haskey(s,x)
         if isa(x.parser.regex,Nothing) && isa(x.parser.partsSeperator,Nothing)
             s[x] = Vocabulary(x.tokens, x.inpdict, x.outdict, Parser{T}())
         else
-            s[x] = Vocabulary(x.tokens, x.inpdict, x.outdict,  Parser{T}(ntuple(i->nothing,4)...))    # Leave conversion to array to KnetArray
+            s[x] = Vocabulary(x.tokens, x.inpdict, x.outdict,  Parser{T}(ntuple(i->nothing,4)...))
         end
     end
     return s[x]
-end
-
-function split_array(array, tok)
-    index = findfirst(x->x==tok,array)
-    array[1:index-1], array[index+1:end]
-end
-
-
-function split_array(array, f::Function)
-    index = findfirst(x->f(first(x)),array)
-    array[1:index-1], array[min(index+1,end):end]
-end
-
-function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask="reinflection")
-    processed = []
-    task = SIGDataSet
-    get_xfield = subtask == "reinflection" ?  xfield : xfield_analyses
-    for (set,inds) in zip(esets,splits)
-        proc_set = []
-        for (d,i) in zip(set,inds)
-            !haskey(neighboorhoods, string(i)) && continue
-            x  = get_xfield(task,d,true)
-            for xp_i in neighboorhoods[string(i)]
-                xp_raw = edata[xp_i[1]+1]
-                xpp_raw = edata[xp_i[2]+1]
-                xp  = get_xfield(task,xp_raw,true)
-                xpp = get_xfield(task,xpp_raw,true)
-                push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
-            end
-        end
-        push!(processed, proc_set)
-    end
-    return processed
-end
-
-isuppercaseornumeric(x) = isuppercase(x) || isnumeric(x)
-
-function read_from_jacobs_format(path, config; Kex=2)
-    println("reading from $path")
-    data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.json"))
-    splits = JSON.parsefile(path*"splits.json")
-    neighbourhoods = JSON.parsefile(path*"neighborhoods.json")
-    vocab  = JSON.parsefile(path*"vocab.json")
-    vocab  = convert(Dict{String,Int},vocab)
-    for (k,v) in vocab; vocab[k] = v+1; end
-    vocab   = IndexedDict(vocab)
-    strdata = [split_array(vocab[d .+ 1][3:end-1],"<sep>") for d in data]
-    strdata = map(strdata) do  d
-        lemma, tags = split_array(d[1],isuppercaseornumeric)
-        (surface=d[2], lemma=lemma, tags=tags)
-    end
-    #strdata = map(d->(surface=d[1], lemma=String[], tags=d[2]), strdata)
-    vocab   = Vocabulary(strdata, Parser{SIGDataSet}())
-    edata   = encode(strdata,vocab)
-    splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
-    esets   = [edata[s] for s in splits]
-    unique_test_tags = shuffle(unique([d.tags for d in esets[2]]))
-    unique_val_tags  = shuffle(unique([d.tags for d in esets[3]]))
-    deleted_tags      = [unique_test_tags[1:max(0,end-Kex)];unique_val_tags[1:max(0,end-Kex)]]
-    filter!(d->d.tags ∉ deleted_tags, esets[1])
-    processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
-    MT      = config["model"]
-    model   = MT(vocab, config; embeddings=nothing)
-    #processed  = preprocess(model, esets...)
-    #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
-    return processed, esets, model
 end

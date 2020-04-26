@@ -1,8 +1,12 @@
-include("util.jl")
-include("parser.jl")
-include("models.jl")
-include("recombine.jl")
-include("seqseqatt.jl")
+include("src/util.jl")
+include("src/parser.jl")
+include("src/attention.jl")
+include("src/vae.jl")
+include("src/rnnlm.jl")
+include("src/proto.jl")
+include("src/recombine.jl")
+include("src/seqseqatt.jl")
+
 
 function limitdev!(sets, limit=1000)
     if length(sets) == 3
