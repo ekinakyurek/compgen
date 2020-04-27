@@ -457,14 +457,22 @@ end
 isuppercaseornumeric(x::Char) = isuppercase(x) || isnumeric(x)
 isuppercaseornumeric(x::AbstractString) =  all(isuppercaseornumeric,x)
 
-function split_array(array::AbstractVector, tok)
+function split_array(array::AbstractVector, tok; include=false)
     index = findfirst(x->x==tok,array)
-    array[1:index-1], array[index+1:end]
+    if include
+        array[1:index-1], array[index:end]
+    else
+        array[1:index-1], array[index+1:end]
+    end
 end
 
-function split_array(array::AbstractVector, f::Function)
+function split_array(array::AbstractVector, f::Function; include=false)
     index = findfirst(x->f(first(x)),array)
-    array[1:index-1], array[min(index+1,end):end]
+    if include
+        array[1:index-1], array[index:end]
+    else
+        array[1:index-1], array[index+1:end]
+    end 
 end
 
 import StringDistances: compare

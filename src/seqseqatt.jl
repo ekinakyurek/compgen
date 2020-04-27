@@ -401,7 +401,7 @@ end
 function eval_seq(vocab::Vocabulary{SIGDataSet}, seq)
     charseq = vocab.tokens[seq]
     if any(map(isuppercaseornumeric, charseq))
-        lemma, tags = split_array(charseq,isuppercaseornumeric)
+        lemma, tags = split_array(charseq, isuppercaseornumeric; include=true)
         [join(lemma,""); tags]
     else
         charseq
@@ -487,6 +487,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
 
         if !isnothing(dev)
             if model.config["gamma"] > 0 && i == n_epochs ÷ 2
+                 println("lrdecay")
                  lrdecay!(model, model.config["gamma"])
             end
             cur_ppl,_,_,cur_acc,cur_f1 = calc_ppl(model, dev)
@@ -675,7 +676,8 @@ sig_cond_config = Dict(
             "paug"=>0.1,
             "model"=>Recombine,
             "conditional"=>true,
-            "n_epoch_batches"=>250,
+            "n_epoch_batches"=>21,
             "n_epoch"=>80,
-            "bestval"=>true
+            "bestval"=>true,
+            "gamma"=>0.1
             )

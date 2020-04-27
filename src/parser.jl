@@ -230,9 +230,9 @@ end
 function xfield(::Type{SIGDataSet},  x, cond::Bool=true; masktags::Bool=false, subtask="reinflection")
     tags = masktags ? fill!(similar(x.tags),specialIndicies.mask) : x.tags
     if subtask=="reinflection"
-        cond ? [x.lemma;[specialIndicies.iosep];tags;[specialIndicies.sep];x.surface] : [x.lemma;[specialIndicies.iosep];tags]
+        cond ? [x.lemma;tags;[specialIndicies.sep];x.surface] : [x.lemma;tags]
     else
-        cond ? [x.surface;[specialIndicies.sep];x.lemma;[specialIndicies.iosep];x.tags] : x.surface
+        cond ? [x.surface;[specialIndicies.sep];x.lemma;x.tags] : x.surface
     end
 end
 xfield(::Type{SCANDataSet}, x, cond::Bool=true) = cond ? [x.input;[specialIndicies.sep];x.output] : x.input
