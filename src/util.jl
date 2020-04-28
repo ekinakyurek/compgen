@@ -326,11 +326,25 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     return embeddings
 end
 
-load_embed(vocab, config, embeddings::Nothing) =
-    Embed(input=length(vocab),output=config["E"])
+load_embed(vocab, config, embeddings::Nothing; ops...) =
+    Embed(input=length(vocab),output=config["E"]; ops...)
 
 load_embed(vocab, config, embeddings::AbstractArray) =
-    Embed(param(convert(arrtype,copy(embeddings))))
+    Embed(param(convert(arrtype,copy(embeddings))); ops...)
+
+function torchinit(T::DataType, s...)
+    st = T(1 / sqrt(config["H"]))
+    2st .* rand(T,s...) .- st
+end
+
+function torchinit(s...)
+    st = Float32(1 / sqrt(config["H"]))
+    2st .* rand(Float32,s...) .- st
+end
+
+const ops_lstm   = (winit=torchinit, binit=torchinit, finit=torchinit)
+const ops_layers = (winit=torchinit, binit=torchinit)
+const ops_embed  = (winit=randn,)
 
 expand_hidden(h,B) = expand(h,dim=2) .+ zeroarray(arrtype,size(h,1),B,size(h,2))
 batch_last(x) = permutedims(x, (1,3,2))
@@ -472,7 +486,7 @@ function split_array(array::AbstractVector, f::Function; include=false)
         array[1:index-1], array[index:end]
     else
         array[1:index-1], array[index+1:end]
-    end 
+    end
 end
 
 import StringDistances: compare
