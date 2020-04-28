@@ -326,10 +326,30 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     return embeddings
 end
 
-load_embed(vocab, config, embeddings::Nothing) =
-    Embed(input=length(vocab),output=config["E"])
+function linear_init(in_dim)
+    st = Float32(1 / sqrt(in_dim))
+    return function (s...)
+        arr = rand(s...)
+        T   = eltype(arr)
+        2T(st) .* arr .- T(st)
+    end
+end
 
-load_embed(vocab, config, embeddings::AbstractArray) =
+function torchinit(s...)
+    arr = rand(s...)
+    T   = eltype(arr)
+    st = T(1 / sqrt(size(arr)[end]))
+    2st .* arr .- st
+end
+
+const ops_lstm   = (winit=torchinit, binit=torchinit, finit=torchinit)
+const ops_layers = (winit=torchinit, binit=torchinit)
+const ops_embed  = (winit=randn,)
+
+load_embed(vocab, config, embeddings::Nothing;ops...) =
+    Embed(;input=length(vocab),output=config["E"],ops...)
+
+load_embed(vocab, config, embeddings::AbstractArray;ops...) =
     Embed(param(convert(arrtype,copy(embeddings))))
 
 expand_hidden(h,B) = expand(h,dim=2) .+ zeroarray(arrtype,size(h,1),B,size(h,2))
@@ -472,7 +492,7 @@ function split_array(array::AbstractVector, f::Function; include=false)
         array[1:index-1], array[index:end]
     else
         array[1:index-1], array[index+1:end]
-    end 
+    end
 end
 
 import StringDistances: compare

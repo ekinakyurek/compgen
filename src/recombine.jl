@@ -18,6 +18,8 @@ struct Recombine{Data}
     config::Dict
 end
 
+
+
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     dinput = config["E"]  + 2config["Z"] + (get(config,"feedcontext",false) ? config["E"] : 0)
     aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1, init=att_winit, atype=arrtype))
@@ -51,6 +53,43 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
                  vocab,
                  config)
 end
+#
+# function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
+#     dinput = config["E"]  + 2config["Z"] + (get(config,"feedcontext",false) ? config["E"] : 0)
+#
+#     myinit = linear_init(config["H"])
+#     lstminit = (winit=myinit, binit=myinit, finit=myinit)
+#     aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
+#     aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
+#     p1     = PositionalAttention(memory=2config["H"], query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true)
+#     enc1   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
+#     if config["seperate"]
+#         aij_k2 = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
+#         aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
+#         p2     = PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
+#         enc2   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
+#     else
+#         p2=p1
+#         enc2 = enc1
+#     end
+#
+#     Recombine{T}(load_embed(vocab, config, embeddings; winit=randn),
+#                  load_embed(vocab, config, embeddings; winit=randn),
+#                  LSTM(;input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"],lstminit...),
+#                  Linear(;input=config["H"]+2config["attdim"], output=config["E"], winit=linear_init(config["H"]+2config["attdim"]), binit=linear_init(config["H"]+2config["attdim"])),
+#                  Multiply(input=config["E"], output=config["Z"]),
+#                  enc1,
+#                  enc2,
+#                  PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"], normalize=true),
+#                  Linear(;input=2config["H"], output=2config["Z"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
+#                  zeroarray(arrtype,config["H"],config["Nlayers"]),
+#                  zeroarray(arrtype,config["H"],config["Nlayers"]),
+#                  p1,
+#                  p2,
+#                  Pw{Float32}(2config["Z"], config["Kappa"]),
+#                  vocab,
+#                  config)
+# end
 
 calc_ppl(model::Recombine, data; trnlen=1) = train!(model, data; eval=true, dev=nothing, trnlen=trnlen)
 calc_mi(model::Recombine, data) = nothing
@@ -264,12 +303,12 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
              push!(outputs,output)
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4)
              logout  = convert(Array, softmax(output, dims=1))
-             tempout = convert(Array, softmax(output ./ temp, dims=1))
+
              if model.config["copy"]
-                 tempout  = sumprobs(tempout, protos[1].tokens, protos[2].tokens)
                  logout   = log.(sumprobs(logout, protos[1].tokens, protos[2].tokens))
              end
              if mixsampler
+                 tempout = convert(Array, softmax(logout ./ temp, dims=1))
                  s1 = vec(mapslices(catsample, tempout, dims=1))
                  s2 = vec(mapslices(argmax, tempout, dims=1))
                  preds[:,i] = [(gen ? s2[k] : s1[k])  for (k,gen) in enumerate(is_input_generated)]
@@ -1015,6 +1054,10 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
             push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2]))
         end
     end
+
+
+
+
     # for i=1:length(set)
     #      p_inp, p_out = inputs[i], outputs[i]
     #      p_lemmaptags = subtask == "reinflection" ? p_inp : p_out

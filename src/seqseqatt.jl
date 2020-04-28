@@ -12,6 +12,7 @@ struct Seq2Seq{Data}
     config::Dict
 end
 
+
 function Seq2Seq(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     V = length(vocab)
     attentions = (PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()),)
@@ -20,22 +21,20 @@ function Seq2Seq(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Data
                     PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()))
     end
     if config["copy"]
-        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct())
+        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct(),winit=linear_init(config["H"]))
     else
         copygate = nothing
     end
-    # pinit = function (t,s)
-    #     st = (1 / sqrt(config["H"]))
-    #     2st .* rand(t,s) .- st
-    # end
-    # ops = (winit=pinit ,binit=pinit ,finit=pinit)
-    Seq2Seq{T}(load_embed(vocab, config, embeddings),
-               load_embed(vocab, config, embeddings),
-               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"]),
-               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"]),
-               Linear(input=2config["H"], output=config["H"]),
-               Linear(input=(1+length(attentions))*config["H"], output=config["H"]),
-               Linear(input=config["H"], output=V),
+    myinit = linear_init(config["H"])
+    lstminit = (winit=myinit, binit=myinit, finit=myinit)
+
+    Seq2Seq{T}(load_embed(vocab, config, embeddings; winit=randn),
+               load_embed(vocab, config, embeddings; winit=randn),
+               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"],lstminit...),
+               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"],lstminit...),
+               Linear(;input=2config["H"],output=config["H"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
+               Linear(;input=(1+length(attentions))*config["H"],output=config["H"],winit=linear_init((1+length(attentions))*config["H"]), binit=linear_init((1+length(attentions))*config["H"])),
+               Linear(;input=config["H"], output=V, winit=linear_init(config["H"])),
                attentions,
                copygate,
                vocab,
@@ -66,18 +65,19 @@ function copy_projection(vocab, tokens)
 end
 
 const EPS = 1e-7
-function decode_onestep(model::Seq2Seq, states, source, prev_context, input, hiddens, copy_proj=nothing, self_proj=nothing, self_mask=nothing)
+function decode_onestep(model::Seq2Seq, states, source, feed, input, hiddens, copy_proj=nothing, self_proj=nothing, self_mask=nothing)
     emb    = model.decembed(input)
-    xi     = dropout(vcat(emb, prev_context[1]), model.config["pdrop"])
+    xi     = dropout(vcat(emb, feed), model.config["pdrop"])
     out    = model.decoder(xi, states...; hy=true, cy=true)
     hidden = out.y
-    source_attn, source_score, source_weight = model.attentions[1](source.hiddens, hidden; mask=source.mask) #positions[1]
-    attns, scores, weights, projs = (source_attn,), (source_score,), (source_weight,), (copy_proj,)
+    source_attn, _, source_weight = model.attentions[1](source.hiddens, hidden; mask=source.mask) #positions[1]
+    attns, weights, projs = (source_attn,), (source_weight,), (copy_proj,)
     if model.config["self_attention"]
-        H,B = size(states[1])
-        hiddenmatrix = reshape(cat1d(hiddens...),H,B,:)
-        self_attn, self_score, self_weight = model.attentions[2](hiddenmatrix, hidden; mask=self_mask)
-        attns, scores, weights, projs = (attns[1],self_attn), (scores[1],self_score), (weights[1], self_weight), (projs[1], self_proj)
+        H,B = size(hidden)
+        hidden3d = reshape(cat1d(hiddens...),H,B,:)
+        self_attn, _, self_weight = model.attentions[2](hidden3d, hidden; mask=self_mask)
+        attns, weights, projs = (attns[1],self_attn),(weights[1],self_weight),(projs[1], self_proj)
+        push!(hiddens, hidden)
     end
     comb_features = dropout(model.combine(vcat(hidden,attns...)), model.config["pdrop"])
     ypred = model.output(comb_features)
@@ -87,15 +87,15 @@ function decode_onestep(model::Seq2Seq, states, source, prev_context, input, hid
         dists  = weights
         seq_probs  = softmax(model.copygate(hidden),dims=1)
         copy_weights = pred_probs[copy:copy,:] # 1 x B
-        weighted_dists = [dists[i] .* seq_probs[i:i, :] .* copy_weights  for i=1:length(dists)]
+        weighted_dists = [dists[i] .* seq_probs[i:i, :]  for i=1:length(dists)]
         copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)]) .+ EPS # V X T X B TIMES T X 1 X B
-        comb_probs = log.(reshape(copy_probs,size(ypred)) .+ ((1+EPS) .-  copy_weights) .* pred_probs)
+        comb_probs = log.(reshape(copy_probs,size(pred_probs)) .* copy_weights  .+  pred_probs)
         pred_logits = comb_probs
     else
         pred_logits  = logp(ypred, dims=1)
         copy_weights = exp.(pred_logits[copy:copy,:])
     end
-    pred_logits, (comb_features,), (source_score,), (out.hidden, out.memory), (copy_weights,)
+    pred_logits, comb_features, (out.hidden, out.memory), (copy_weights,)
 end
 
 function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, target=nothing; sampler=argmax, training=true)
@@ -108,32 +108,28 @@ function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, targe
     limit      = training ? size(target,2)-1 : model.config["maxLength"]
     preds      = training ? copy(target) : ones(Int, B, limit+1) .* specialIndicies.bow
     outputs    = []
-    outhiddens = Any[zeroarray(arrtype,size(source_hiddens)[1], size(source_hiddens)[2], 1)]
-    attns      = (zeroarray(arrtype,model.config["H"],B),)
+    hiddens    = Any[zeroarray(arrtype,H,B)]
+    feed       = zeroarray(arrtype,H,B)
     copy_proj  = arrtype(copy_projection(model.vocab, source_enc.tokens))
-    if model.config["self_attention"]
-        self_proj = arrtype(copy_projection(model.vocab, fill!(similar(preds[:,1:1]),specialIndicies.mask)))
-        self_mask = arrtype(T(-1e18)*trues(1,B))
-    else
-        self_proj = nothing
-        self_mask = nothing
-    end
     for i=1:limit
-         output, attns, scores, states, c_weights = decode_onestep(model, states, source, attns, preds[:,i], outhiddens, copy_proj, self_proj, self_mask)
+        if model.config["self_attention"]
+            self_proj = arrtype(copy_projection(model.vocab, preds[:,1:i]))
+            self_mask = (preds[:,1:i] .== specialIndicies.mask)
+            self_mask[:,1] .= true
+            self_mask = arrtype(T(-1e18)*self_mask')
+        else
+            self_proj, self_mask = nothing, nothing
+        end
+         output,feed,states,_= decode_onestep(model,states,source,feed,preds[:,i],hiddens,copy_proj,self_proj,self_mask)
          if !training
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4,7)
+         # else
+         #     negativemask!(output,7)
          end
          push!(outputs,output)
          if !training
-             output = convert(Array, exp.(output))
+             output = softmax(output,dims=1) |> cpucopy
              preds[:,i+1] = vec(mapslices(sampler, output, dims=1))
-         end
-         if model.config["self_attention"]
-             push!(outhiddens, states[1])
-             self_proj = arrtype(copy_projection(model.vocab, preds[:,1:i+1]))
-             self_mask = (preds[:,1:i+1] .== specialIndicies.mask)
-             self_mask[:,1] .= true
-             self_mask = arrtype(T(-1e18) .* self_mask')
          end
     end
     return reshape(cat1d(outputs...),V,B,limit), preds[:,2:end]
@@ -248,8 +244,8 @@ function loss(model::Seq2Seq, data; eval=false, returnlist=false)
         # preds = [trimencoded(preds[1][i,:]) for i=1:B]
     end
     if !returnlist
-        inds = KnetLayers.findindices(output,yinds)
-        loss = -sum(output[inds]) / ntokens
+        #inds = KnetLayers.findindices(output,yinds)
+        loss = nllmask(output, yinds; average=true)
     else
         logpy = output
         loss = []
