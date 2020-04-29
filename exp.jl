@@ -446,7 +446,7 @@ recombine_scan_config = Dict(
               "Nsamples"=>300,
               "pplnum"=>1000,
               "authresh"=>0.1,
-              "Nlayers"=>2,
+              "Nlayers"=>1,
               "Kappa"=>25,
               "max_norm"=>10.0,
               "eps"=>1.0,
@@ -473,7 +473,9 @@ recombine_scan_config = Dict(
               "condmodel"=>Seq2Seq,
               "subtask"=>nothing,
               "paug"=>0.01,
-              "seperate"=>true
+              "seperate"=>true,
+              "seperate_emb"=>false,
+              "feedcontext"=>true
               )
 
 
@@ -536,7 +538,10 @@ recombine_sig_config = Dict(
              "paug"=>0.1,
              "seperate"=>true,
              "feedcontext"=>true,
-             "path"=>"jacob/morph/"
+             "path"=>"jacob/morph/",
+             "seperate_emb"=>false,
+             "hints"=>4,
+             "seed"=>3
              )
 
 

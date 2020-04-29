@@ -36,8 +36,15 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
         enc2 = enc1
     end
 
-    Recombine{T}(load_embed(vocab, config, embeddings),
-                 load_embed(vocab, config, embeddings),
+    emb1 = load_embed(vocab, config, embeddings)
+    if config["seperate_emb"]
+        emb2 = load_embed(vocab, config, embeddings)
+    else
+        emb2=emb1
+    end
+
+    Recombine{T}(emb1,
+                 emb2,
                  LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                  Linear(input=config["H"]+2config["attdim"], output=config["E"]),
                  Multiply(input=config["E"], output=config["Z"]),
@@ -388,8 +395,9 @@ function decode_train(model::Recombine, x, xp, xpp, z)
 end
 
 function encode(m::Recombine, x, xp, xpp; prior=false)
-    xp_context    = m.xp_encoder(m.encembed(xp.tokens)).y
-    xpp_context   = m.xp_encoder(m.encembed(xpp.tokens)).y
+    pdrop =  m.config["pdrop"]
+    xp_context    = m.xp_encoder(dropout(m.encembed(xp.tokens), pdrop)).y
+    xpp_context   = m.xp_encoder(dropout(m.encembed(xpp.tokens),pdrop)).y
     if !m.config["kill_edit"]
         if prior
             μ = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
