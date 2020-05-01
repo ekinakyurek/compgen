@@ -10,7 +10,7 @@ import Knet: sumabs2, norm, At_mul_B
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
-using Printf, Dates, JSON, Distributions
+using Printf, Dates, JSON, Distributions, ArgParse
 ###
 #### UTILS
 ###
@@ -326,25 +326,32 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     return embeddings
 end
 
-load_embed(vocab, config, embeddings::Nothing; ops...) =
-    Embed(input=length(vocab),output=config["E"]; ops...)
 
-load_embed(vocab, config, embeddings::AbstractArray) =
-    Embed(param(convert(arrtype,copy(embeddings))); ops...)
-
-function torchinit(T::DataType, s...)
-    st = T(1 / sqrt(config["H"]))
-    2st .* rand(T,s...) .- st
+function linear_init(in_dim)
+    st = Float32(1 / sqrt(in_dim))
+    return function (s...)
+        arr = rand(s...)
+        T   = eltype(arr)
+        2T(st) .* arr .- T(st)
+    end
 end
 
 function torchinit(s...)
-    st = Float32(1 / sqrt(config["H"]))
-    2st .* rand(Float32,s...) .- st
+    arr = rand(s...)
+    T   = eltype(arr)
+    st = T(1 / sqrt(size(arr)[end]))
+    2st .* arr .- st
 end
 
 const ops_lstm   = (winit=torchinit, binit=torchinit, finit=torchinit)
 const ops_layers = (winit=torchinit, binit=torchinit)
 const ops_embed  = (winit=randn,)
+
+load_embed(vocab, config, embeddings::Nothing;ops...) =
+    Embed(;input=length(vocab),output=config["E"],ops...)
+
+load_embed(vocab, config, embeddings::AbstractArray;ops...) =
+    Embed(param(convert(arrtype,copy(embeddings))))
 
 expand_hidden(h,B) = expand(h,dim=2) .+ zeroarray(arrtype,size(h,1),B,size(h,2))
 batch_last(x) = permutedims(x, (1,3,2))
@@ -493,3 +500,15 @@ import StringDistances: compare
 compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
 compare(x::Vector{Int},    y::AbstractString, dist) = compare(x,String(map(UInt8,y)),dist)
 compare(x::AbstractString, y::Vector{Int},    dist) = compare(String(map(UInt8,x)),y,dist)
+
+"""
+    printConfig(f::IO,o::Dict{Symbol,Any})
+    Prints the configuration dictionary
+"""
+printLog(f::IO, str...) = (println(f,Dates.Time(now()),": ",str...); flush(f);)
+printConfig(o::Dict) = printConfig(Base.stdout,o)
+function printConfig(f::IO,o::Dict)
+    printLog(f,"Configuration: ")
+    for (k,v) in o; v!== nothing && println(f, k, " => " , v); end
+    flush(f)
+end

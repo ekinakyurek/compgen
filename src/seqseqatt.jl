@@ -15,24 +15,28 @@ end
 
 function Seq2Seq(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     V = length(vocab)
+    myinit = linear_init(config["H"])
     attentions = (PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()),)
     if config["self_attention"]
         attentions=(attentions[1],
                     PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()))
     end
     if config["copy"]
-        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct())
+        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct(), winit=myinit, binit=myinit)
     else
         copygate = nothing
     end
 
-    Seq2Seq{T}(load_embed(vocab, config, embeddings; ops_embed...),
-               load_embed(vocab, config, embeddings; ops_embed...),
-               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"],ops_lstm...),
-               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"],ops_lstm...),
-               Linear(;input=2config["H"],output=config["H"],ops_layers...),
-               Linear(;input=(1+length(attentions))*config["H"],output=config["H"],ops_layers...),
-               Linear(;input=config["H"], output=V, ops_layers...),
+
+    lstminit = (winit=myinit, binit=myinit, finit=myinit)
+
+    Seq2Seq{T}(load_embed(vocab, config, embeddings; winit=randn),
+               load_embed(vocab, config, embeddings; winit=randn),
+               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"], lstminit...),
+               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"], lstminit...),
+               Linear(;input=2config["H"],output=config["H"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
+               Linear(;input=(1+length(attentions))*config["H"],output=config["H"],winit=linear_init((1+length(attentions))*config["H"]), binit=linear_init((1+length(attentions))*config["H"])),
+               Linear(;input=config["H"], output=V, winit=myinit),
                attentions,
                copygate,
                vocab,
@@ -121,8 +125,8 @@ function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, targe
          output,feed,states,_= decode_onestep(model,states,source,feed,preds[:,i],hiddens,copy_proj,self_proj,self_mask)
          if !training
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4,7)
-         else
-               negativemask!(output,7)
+         # else
+         #     negativemask!(output,7)
          end
          push!(outputs,output)
          if !training
@@ -430,7 +434,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
         #dt  = Iterators.Stateful((eval ? data : data)) #FIXME: SHUFFLE!
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f", total_iter, lss/ntokens, lss/ninstances))
         #for i in progress(msg,1:n_epoch_batches)
-        for j in progress(msg,1:n_epoch_batches)
+        for j in 1:n_epoch_batches
             d = getbatch(model,dt,model.config["B"])
             isnothing(d) && break
             b  = size(d[1].mask,1)
@@ -600,78 +604,3 @@ function preprocess(model::Seq2Seq, train, devs...)
         end
     end
 end
-
-
-
-scan_cond_config = Dict(
-              "H"=>512,
-              "E"=>64,
-              "B"=>64,
-              "attdim"=>512,
-              "optim"=>Adam(lr=0.001),
-              "gradnorm"=>1.0,
-              "N"=>100,
-              "epoch"=>150,
-              "pdrop"=>0.5,
-              "Nlayers"=>1,
-              "activation"=>ELU,
-              "maxLength"=>45,
-              "task"=>SCANDataSet,
-              "patiance"=>10,
-              "lrdecay"=>0.5,
-              "split" => "add_prim",
-              "splitmodifier" => "jump",
-              "beam_width" => 4,
-              "copy" => false,
-              "outdrop" => 0.0,
-              "attdrop" => 0.0,
-              "outdrop_test" => false,
-              "positional" => false,
-              "condmodel"=>Seq2Seq,
-              "subtask"=>nothing,
-              "paug"=>0.05,
-              "model"=>Recombine,
-              "conditional"=>true,
-              "n_epoch_batches"=>32,
-              "n_epoch"=>150,
-              "bestval"=>false,
-              "gamma"=>0,
-              "self_attention"=>false,
-              )
-
-
-sig_cond_config = Dict(
-            "H"=>1024,
-            "E"=>1024,
-            "B"=>64,
-            "attdim"=>1024,
-            "optim"=>Adam(lr=0.0001),
-            "gradnorm"=>0.0,
-            "lang"=>"spanish",
-            "N"=>100,
-            "epoch"=>80,
-            "pdrop"=>0.0,
-            "Nlayers"=>1,
-            "activation"=>ELU,
-            "maxLength"=>45,
-            "task"=>SIGDataSet,
-            "patiance"=>0,
-            "lrdecay"=>0.9,
-            "beam_width" => 4,
-            "copy" => true,
-            "self_attention"=>true,
-            "outdrop" => 0.0,
-            "attdrop" => 0.0,
-            "outdrop_test" => false,
-            "positional" => false,
-            "condmodel"=>Seq2Seq,
-            "subtask"=>"analyses",
-            "split"=>"jacob",
-            "paug"=>0.1,
-            "model"=>Recombine,
-            "conditional"=>true,
-            "n_epoch_batches"=>21,
-            "n_epoch"=>80,
-            "bestval"=>true,
-            "gamma"=>0.1
-            )
