@@ -21,8 +21,10 @@ function run(args=ARGS)
         ("--attdrop"; arg_type=Float64; default=.1; help="attention dropout in attentions ")
         ("--optim"; arg_type=String; default="Adam(;lr=0.001)")
         ("--copy"; action=:store_true; help="copy meachanism in rnn")
+        ("--self_attention"; action=:store_true; help="self_attention meachanism in rnn")
         ("--outdrop_test"; action=:store_true; help="dropout on output at test time")
         ("--paug"; arg_type=Float64; default=.0; help="augmentation ratio for condtional model, 0 for direct concatenation")
+        ("--subtask"; arg_type=String; default="analyses"; help="subtask for sigmorphon")
     end
 
     isa(args, AbstractString) && (args=split(args))
