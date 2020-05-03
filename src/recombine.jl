@@ -104,75 +104,52 @@ calc_au(model::Recombine, data) = nothing
 sampleinter(model::Recombine, data) = nothing
 
 function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
-    Random.seed!(m.config["seed"])
+    dist = Levenshtein()
     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
     sets = map((train,devs...)) do set
             map(d->xfield(T,d,cond),set)
     end
     sets = map(unique,sets)
-    strs= map(sets) do set
+    words = map(sets) do set
         map(d->String(map(UInt8,d)),set)
     end
-    trnstrs  = first(strs)
-    trnwords = first(sets)
-    adjlists = []
-    dist     = Levenshtein()
-    for (k,set) in enumerate(sets)
+    trnwords = first(words)
+    adjlists  = []
+    for (k,set) in enumerate(words)
         adj = Dict((i,[]) for i=1:length(set))
         processed = []
-        cstrs     = strs[k]
-        xp_lens, xpp_lens, total = 0.0, 0.0, 0.0
-        @inbounds for i in progress(1:length(set))
-            current_word  = set[i]
-            current_str   = cstrs[i]
-            xp_candidates = []
-            for j in randperm(length(trnwords))
-                (k==1 && j==i) && continue
-                trn_word = trnwords[j]
-                trn_str  = trnstrs[j]
-                sdiff = length(setdiff(current_word,trn_word))
-                ldiff = compare(current_str,trn_str,dist)
-                if ldiff > 0.5 && ldiff != 1.0 && sdiff > 0
-                    push!(xp_candidates,(j,ldiff))
+        for i in progress(1:length(set))
+            cw            = set[i]
+            neighbours    = []
+            cnt   = 0
+            inds  = randperm(length(trnwords))
+            for j in inds
+                w    = trnwords[j]
+                diff = compare(cw,w,dist)
+                if diff > thresh && diff != 1
+                    push!(neighbours,j)
+                    cnt+=1
+                    cnt == maxcnt && break
                 end
             end
-            if isempty(xp_candidates)
-                if k != 1
-                    push!(xp_candidates, rand(1:length(trnwords)))
-                else
-                    continue
-                end
-            else
-                xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
+            if isempty(neighbours)
+                push!(neighbours, rand(inds))
             end
-            for n in xp_candidates
-                xpp_candidates = []
-                xp_tokens      = trnwords[n]
-                diff_tokens    = setdiff(current_word,xp_tokens)
-                diff_str       = String(map(UInt8,diff_tokens))
-                for l=1:length(trnwords)
+            for n in neighbours
+                x′′ = []
+                ntokens = sets[1][n]
+                xtokens = sets[k][i]
+                tokens = collect(setdiff(xtokens,ntokens))
+                cw     = String(map(UInt8,tokens))
+                for l in inds
                     if l != n && l !=i
-                        ldiff = compare(diff_str,trnstrs[l],dist)
-                        #sdiff = length(symdiff(diff_tokens,trnwords[l]))
-                        lendiff = abs(length(trnwords[l])-length(diff_tokens))
-                        if ldiff > 0.5 && lendiff < 5
-                            push!(xpp_candidates,(l,ldiff))
-                            #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                            # cnt+=1
-                            #cnt == 3 && break
+                        w    = trnwords[l]
+                        diff = compare(cw,w,dist)
+                        if diff > 0.5
+                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+                            cnt+=1
+                            cnt == 3 && break
                         end
-                    end
-                end
-                if isempty(xpp_candidates)
-                    if k != 1
-                        push!(processed, (x=current_word, xp=xp_tokens, xpp=rand(sets[1]))) #push!(neighbours, rand(inds))
-                    else
-                        continue
-                    end
-                else
-                    xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
-                    for xpp in xpp_candidates
-                        push!(processed, (x=current_word, xp=xp_tokens, xpp=trnwords[xpp]))
                     end
                 end
             end
