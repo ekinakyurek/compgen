@@ -88,7 +88,7 @@ function kl_calc(m)
     return kl_term
 end
 
-function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1, returnlist=false)
+function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1, returnlist=false, prior=false)
     ppl = typemax(Float64)
     if !eval
         bestparams = deepcopy(parameters(model))
@@ -108,7 +108,7 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1, return
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f", total_iter, lss/ntokens, lss/ninstances))
         for i in progress(msg, 1:((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
-            d = getbatch(model,dt,model.config["B"])
+            d = getbatch(model,dt,model.config["B"]; train=!eval)
             isnothing(d) && continue
             if !eval
                 J = @diff loss(model, d; eval=false)
@@ -125,7 +125,7 @@ function train!(model::ProtoVAE, data; eval=false, dev=nothing, trnlen=1, return
                 end
             else
                 #J = loss(model, d; eval=false)
-                ls = loss(model, d; eval=true)
+                ls = loss(model, d; eval=true, prior=prior)
                 append!(losses,ls)
                 J = mean(ls)
             end
@@ -315,7 +315,7 @@ function beam_search(model::ProtoVAE, traces, contexts, proto, masks, z; step=1,
             inputs[:,stopped] .= specialIndicies.eow
         end
         if forviz
-            scores_softmaxed = map(Array, softmax(weights))
+            scores_softmaxed = map(Array, weights)
         else
             scores_softmaxed = nothing
         end
@@ -440,11 +440,11 @@ function id_attention_drop(ID,attend_pr,B)
     return (I=I,D=D,Imask=Imask,Dmask=Dmask)
 end
 
-function loss(model::ProtoVAE, data; eval=false)
+function loss(model::ProtoVAE, data; eval=false, prior=false)
     xmasked, x_mask, xp_masked, xp_mask, ID, copyinds, unbatched = data
     B = length(first(unbatched))
     xp = (tokens=xp_masked,lengths=length.(unbatched[2]))
-    agenda, pcontext, z, ID_enc = encode(model, xp, ID; prior=false)
+    agenda, pcontext, z, ID_enc = encode(model, xp, ID; prior=prior)
     ID   = id_attention_drop(ID_enc, model.config["attend_pr"], B)
     output, _ = decode(model, xmasked, (tokens=xp_masked, mask=xp_mask, context=pcontext),  ID, agenda)
     if model.config["copy"]
@@ -465,6 +465,7 @@ function loss(model::ProtoVAE, data; eval=false)
             T = size(unpadded,2)
             loss = []
             for i=1:B
+                #@show [sum(probs[unpadded[i,t]]) |>cpucopy for t=1:T if !isempty(unpadded[i,t])]
                 push!(loss, -sum((log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t]))))
             end
         end
@@ -485,6 +486,65 @@ function loss(model::ProtoVAE, data; eval=false)
         end
     end
     return loss
+end
+
+function viz(model::ProtoVAE, data; N=5, beam=true)
+    samples = sample(model, shuffle(data); N=N, sampler=sample, prior=false, beam=beam, forviz=true)
+    vocab = model.vocab.tokens
+    #json = map(d->JSON.lower((x=vocab[d.x], xp=vocab[d.xp], xpp=vocab[d.xpp], scores1=d.scores[1], scores2=d.scores[2], probs=d.probs)), samples)
+    #open("attention_maps.json", "w+") do f
+
+    #    JSON.print(f,json, 4)
+    #end
+    for i=1:length(samples)
+        x, scores, probs, xp = samples[i]
+        println("samples: ", join(model.vocab.tokens[x],' '))
+        println("xp: ", join(model.vocab.tokens[xp],' '))
+        println("----------------------")
+        attension_visualize3(model.vocab, probs, scores, xp, x; prefix="$i")
+    end
+end
+
+
+function removeunicodes2(toElement)
+    vocab = copy(toElement)
+    vocab[1:6] = ["<unk>", "<mask>", "<eow>", "<bow>","sep","hash"]
+    return vocab
+end
+
+function attension_visualize3(vocab, probs, scores, xp, x; prefix="")
+    words = removeunicodes2(vocab.tokens.toElement)
+    x  = words[x]
+    @show y1 = words[xp]
+    scale = 1000/15
+    attributes = (color=:ice,
+                  aspect_ratio=:auto,
+                  legend=false,
+                  xtickfont=font(9, "Serif"),
+                  ytickfont=font(9, "Serif"),
+                  xrotation=30,
+                  xticks=(1:length(x),x),
+                  ticks=:all,
+                  size=(length(x)*scale, length(x)*scale),
+                  dpi=200,
+                )
+
+    # y3 = [words; "xp" .* string.(1:length(xp))]
+    # l = @layout [a b]
+    p1 = heatmap(scores[1];yticks=(1:length(y1),y1),title="xp-x attention", attributes...)
+    # p3 = heatmap(probs;yticks=(1:length(y3),y3), title="action probs", attributes...)
+    # p  = Plots.plot(p3,p1; layout=l)
+    Plots.savefig(p1, prefix*"_attention_map_proto.pdf")
+end
+
+function process_for_viz(vocab, pred, xp, I, D, scores, probs)
+    xtrimmed    = trimencoded(pred)
+    xps         = (trimencoded(xp),)
+    attscores   = [score[1:length(xps[k]),1:length(xtrimmed)] for  (k,score) in enumerate(scores)]
+    ixp_end     = length(vocab)+length(xps[1])
+    indices     = collect(1:ixp_end)
+    outsoft     = probs[indices,1:length(xtrimmed)]
+    (x=xtrimmed, scores=attscores, probs=outsoft, xp=xps[1])
 end
 
 function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sanitize=true, beam=true, forviz=false)
@@ -509,10 +569,10 @@ function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sa
                     for i=1:b
                         @inbounds push!(samples, process_for_viz(vocab,
                         preds[1][i,:],
-                        xp_masked.tokens[i,:],
+                        xp_masked[i,:],
                         ID.I[i,:],
                         ID.D[i,:],
-                        ntuple(k->scores[k][:,i,:],2),
+                        ntuple(k->scores[k][:,i,:],1),
                         outputs[:,i,:]))
                     end
                     length(samples) >= N && break
@@ -544,16 +604,41 @@ function sample(model::ProtoVAE, data; N=nothing, sampler=sample, prior=true, sa
     return samples
 end
 
-function getbatch(model::ProtoVAE, iter, B)
+function print_ex_samples(model::ProtoVAE, data; beam=true, mixsampler=false)
+    println("generating few examples")
+    #for sampler in (sample, argmax)
+    for prior in (true, false)
+        println("Prior: $(prior) , attend_pr: 0.0")
+        for s in sample(model, data; N=10, sampler=argmax, prior=prior, beam=beam)
+            println("===================")
+            for field in propertynames(s)
+                println(field," : ", getproperty(s,field))
+            end
+            println("===================")
+        end
+    end
+    println("done")
+    #end
+end
+
+function getbatch(model::ProtoVAE, iter, B; train=true)
     edata = collect(Iterators.take(iter,B))
     b = length(edata); b==0 && return nothing
     x, xp, ID = unzip(edata)
     I, D = unzip(ID)
+    if train && model.config["p(xp=x)"] != 0
+        for i in findall(rand(length(x)) .< model.config["p(xp=x)"])
+            xp[i] = x[i]
+            I[i]  = Int[]
+            D[i]  = Int[]
+        end
+    end
     unk, mask, eow, bow,_,_ = specialIndicies
     maxL = model.config["maxLength"]
     x = limit_seq_length_eos_bos(x;maxL=maxL)
     #x  = map(s->[bow;s], xlimited)
     xp = map(s->s, limit_seq_length(xp;maxL=maxL))
+
     #x  = map(s->(length(s)>25 ? s[1:25] : s) , x) # FIXME: maxlength as constant
     #xp = map(s->(length(s)>25 ? s[1:25] : s) , xp)
     #xp_packed   = _pack_sequence(xp)

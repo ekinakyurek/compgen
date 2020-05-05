@@ -123,7 +123,14 @@ end
 function parseDataLine(line::AbstractString, parser::Parser{YelpDataSet})
     #input, proto = split(replace(lowercase(line), r"[^\w\s]"=>s""),"\t")
     proto, input = split(lowercase(strip(line)), '\t')
-    return (X=filter(!isempty,split(input,' ')), xp=filter(!isempty,split(proto,' ')))
+    return (x=filter(!isempty,split(input,' ')), xp=filter(!isempty,split(proto,' ')))
+end
+
+#etrnset = map(line->encode(parseDataLineRNNLM(line,vocab.parser),vocab), eachline("/home/gridsan/eakyurek/git/datagen/data/Yelp/yelp_split.train.txt"))
+function parseDataLineRNNLM(line::AbstractString, parser::Parser{YelpDataSet})
+    #input, proto = split(replace(lowercase(line), r"[^\w\s]"=>s""),"\t")
+    x = split(line[findfirst(":",line)[1]+1:end],' ')
+    return (x=x, xp=[specialTokens.mask], xpp=[specialTokens.mask])
 end
 
 function parseDataFile(f::AbstractString, parser::Parser)
@@ -147,8 +154,8 @@ function encode_cond(a::NamedTuple, v::Vocabulary)
 end
 
 function EncodedFormat(a::NamedTuple, v::Vocabulary{YelpDataSet})
-    input       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.input)
-    proto       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.proto)
+    input       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.x)
+    proto       = map(x->get(v.tokens, x, specialIndicies.unk)::Int, a.xp)
     si,sp       = Set(input), Set(proto)
     (x  = input,
      xp = proto,

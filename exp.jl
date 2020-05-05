@@ -253,7 +253,6 @@ function parse_results(fname)
 end
 
 
-
 #
 # function run_experiments_simple(baseconfig)
 #     f = open("resultr.csv","w+")
@@ -272,16 +271,37 @@ end
 #     end
 # end
 
+function main_proto(config)
+
+end
+
 function eval_mixed(proto, rnnlm, test; p=0.1, trnlen=1)
     proto_nllh, kl, mem, data, inds = train!(proto,test; eval=true, returnlist=true, trnlen=trnlen)
+    proto_nllh2,_ = train!(proto,test; eval=true, returnlist=true, trnlen=trnlen, prior=true)
+    proto_nllh_kl = [min(p1+kl,p2) for (p1,p2) in zip(proto_nllh,proto_nllh2)]
     sentences = [data[first(ind)] for ind in inds]
     rnn_nllh, _  = train!(rnnlm, sentences; eval=true, returnlist=true)
     nwords = sum(map(d->sum(d.x .> 4)+1, sentences))
     @show kl, mem, nwords, length(sentences)
-    proto_llh  = -(proto_nllh .+ (kl+mem))
+    proto_llh  = -(proto_nllh_kl .+ mem)
     mixed_nllh = -logsumexp(hcat(proto_llh .+ log(p), -rnn_nllh .+ log(1-p)), dims=2)
     @show exp(sum(mixed_nllh)/nwords)
-    -mixed_nllh, proto_llh, -rnn_nllh, sentences
+    ms = map(groupit,length.(inds))
+    xys = vcat(([x y] for (x,y) in zip(-proto_nllh .- mem, -rnn_nllh))...)
+    xy = plot(-200:20:-10,-200:20:-10)
+    plt = scatter!(xys[:,1], xys[:,2]; markersize=ms, legend=false)
+    title!("Loglikelihood NLM vs Proto")
+    yaxis!("NLM")
+    xaxis!("Neural-Editor")
+    Plots.savefig("protonlm_copy_$(config["copy"]).pdf")
+    -mixed_nllh, proto_llh, -rnn_nllh, sentences, data, inds
+end
+
+function groupit(l)
+   if l==1; 1
+   elseif l<50 && l>1; 2
+   elseif l<300 && l>=50; 3
+   elseif l>=300; 4; end
 end
 
 

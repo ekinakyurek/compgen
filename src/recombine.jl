@@ -60,75 +60,52 @@ calc_au(model::Recombine, data) = nothing
 sampleinter(model::Recombine, data) = nothing
 
 function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
-    Random.seed!(m.config["seed"])
+    dist = Levenshtein()
     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
     sets = map((train,devs...)) do set
             map(d->xfield(T,d,cond),set)
     end
     sets = map(unique,sets)
-    strs= map(sets) do set
+    words = map(sets) do set
         map(d->String(map(UInt8,d)),set)
     end
-    trnstrs  = first(strs)
-    trnwords = first(sets)
-    adjlists = []
-    dist     = Levenshtein()
-    for (k,set) in enumerate(sets)
+    trnwords = first(words)
+    adjlists  = []
+    for (k,set) in enumerate(words)
         adj = Dict((i,[]) for i=1:length(set))
         processed = []
-        cstrs     = strs[k]
-        xp_lens, xpp_lens, total = 0.0, 0.0, 0.0
-        @inbounds for i in progress(1:length(set))
-            current_word  = set[i]
-            current_str   = cstrs[i]
-            xp_candidates = []
-            for j in randperm(length(trnwords))
-                (k==1 && j==i) && continue
-                trn_word = trnwords[j]
-                trn_str  = trnstrs[j]
-                sdiff = length(setdiff(current_word,trn_word))
-                ldiff = compare(current_str,trn_str,dist)
-                if ldiff > 0.5 && ldiff != 1.0 && sdiff > 0
-                    push!(xp_candidates,(j,ldiff))
+        for i in progress(1:length(set))
+            cw            = set[i]
+            neighbours    = []
+            cnt   = 0
+            inds  = randperm(length(trnwords))
+            for j in inds
+                w    = trnwords[j]
+                diff = compare(cw,w,dist)
+                if diff > thresh && diff != 1
+                    push!(neighbours,j)
+                    cnt+=1
+                    cnt == maxcnt && break
                 end
             end
-            if isempty(xp_candidates)
-                if k != 1
-                    push!(xp_candidates, rand(1:length(trnwords)))
-                else
-                    continue
-                end
-            else
-                xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
+            if isempty(neighbours)
+                push!(neighbours, rand(inds))
             end
-            for n in xp_candidates
-                xpp_candidates = []
-                xp_tokens      = trnwords[n]
-                diff_tokens    = setdiff(current_word,xp_tokens)
-                diff_str       = String(map(UInt8,diff_tokens))
-                for l=1:length(trnwords)
+            for n in neighbours
+                x′′ = []
+                ntokens = sets[1][n]
+                xtokens = sets[k][i]
+                tokens = collect(setdiff(xtokens,ntokens))
+                cw     = String(map(UInt8,tokens))
+                for l in inds
                     if l != n && l !=i
-                        ldiff = compare(diff_str,trnstrs[l],dist)
-                        #sdiff = length(symdiff(diff_tokens,trnwords[l]))
-                        lendiff = abs(length(trnwords[l])-length(diff_tokens))
-                        if ldiff > 0.5 && lendiff < 5
-                            push!(xpp_candidates,(l,ldiff))
-                            #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                            # cnt+=1
-                            #cnt == 3 && break
+                        w    = trnwords[l]
+                        diff = compare(cw,w,dist)
+                        if diff > 0.5
+                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+                            cnt+=1
+                            cnt == 3 && break
                         end
-                    end
-                end
-                if isempty(xpp_candidates)
-                    if k != 1
-                        push!(processed, (x=current_word, xp=xp_tokens, xpp=rand(sets[1]))) #push!(neighbours, rand(inds))
-                    else
-                        continue
-                    end
-                else
-                    xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
-                    for xpp in xpp_candidates
-                        push!(processed, (x=current_word, xp=xp_tokens, xpp=trnwords[xpp]))
                     end
                 end
             end
@@ -238,7 +215,7 @@ end
 
 
 
-function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
+function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false, viz=false)
     T,B        = eltype(arrtype), size(z,2)
     H,V,E      = model.config["H"], length(model.vocab.tokens), model.config["E"]
     Kpos       = model.config["Kpos"]
@@ -259,13 +236,16 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
          if model.config["positional"]
              positions = map(p->position_calc(size(p.tokens,2), i; K=Kpos), protos)
          end
-         y,_,scores,states,_,context = decode_onestep(model, states, protos, masks, z, input, context, positions)
+         y,_,scores,states,weights,context = decode_onestep(model, states, protos, masks, z, input, context, positions)
          if !training
              ypred = At_mul_B(model.decembed.weight,y)
              output = cat_copy_scores(model, ypred, scores...)
              push!(outputs,output)
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4)
              softout  = convert(Array, softmax(output, dims=1))
+             if viz
+                 for i=1:2; push!(scores_arr[i],weights[i]); end
+             end
              if model.config["copy"]
                  softout  = sumprobs(softout, protos[1].tokens, protos[2].tokens)
              end
@@ -301,7 +281,10 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
         outp = At_mul_B(model.decembed.weight, reshape(cat1d(outputs...), config["E"], B * limit))
         return cat_copy_scores(model, reshape(outp,V,B,limit), sarr...), preds
     else
-        return reshape(cat1d(outputs...), dim, B, limit), preds, exp.(probs)
+        if viz
+            scores_arr = ntuple(i->reshape(cat1d(scores_arr[i]...),size(protos[i].tokens,2),B,limit),length(scores_arr))
+        end
+        return reshape(cat1d(outputs...), dim, B, limit), preds, exp.(probs), scores_arr
     end
 end
 
@@ -427,6 +410,15 @@ function loss(model::Recombine, data; average=false, eval=false, prior=false, co
             T = size(unpadded,2)
             loss = []
             for i=1:B
+                # arr = probs |> cpucopy
+                # seqinds   = [unpadded[i,t] for t=1:T if !isempty(unpadded[i,t])]
+                # println(seqinds)
+                # seqloss   = -[log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t])]
+                # seqtokens = [model.vocab.tokens[x.tokens[i,t+1]] for t=1:T if !isempty(unpadded[i,t])]
+                # seqargmax = [sortperm(arr[:,t],rev=true)[1:10] for t=1:T if !isempty(unpadded[i,t])]
+                # for (t,l,a) in zip(seqtokens,seqloss,seqargmax)
+                #     println("($t,$l,$a)")
+                # end
                 push!(loss, -sum((log.(sum(probs[unpadded[i,t]])) for t=1:T if !isempty(unpadded[i,t]))))
             end
         end
@@ -459,7 +451,7 @@ function copy_indices(xp, xmasked, L::Integer, offset::Integer=0)
         @inbounds for i=1:B
             start = (t-2) * L * B + (i-1)*L + offset
             token =  xmasked[i,t]
-            if token != specialIndicies.mask
+            if token != specialIndicies.mask && token != specialIndicies.unk
                 @inbounds for i in findall(t->t==token,xp[i])
                     push!(indices, start+i)
                 end
@@ -511,7 +503,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
         dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i in 1:((length(dt)-1) ÷ model.config["B"])+1
+        for i in progress(msg,1:((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
@@ -681,8 +673,8 @@ if get(ENV,"recombine_viz",false)
 end
 
 
-function viz(model, data; N=5)
-    samples = sample(model, shuffle(data); N=N, sampler=sample, prior=false, beam=true, forviz=true)
+function viz(model::Recombine, data; N=5, beam=true, mixsampler=false)
+    samples = sample(model, shuffle(data); N=N, sampler=sample, prior=false, beam=beam, mixsampler=mixsampler, forviz=true)
     vocab = model.vocab.tokens
     #json = map(d->JSON.lower((x=vocab[d.x], xp=vocab[d.xp], xpp=vocab[d.xpp], scores1=d.scores[1], scores2=d.scores[2], probs=d.probs)), samples)
     #open("attention_maps.json", "w+") do f
@@ -1159,7 +1151,21 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
             predstr = [join(ntuple(k->trim(preds[k][i,:], vocab),length(preds)),'\n')  for i=1:b]
             predenc = [trimencoded(preds[1][i,:]) for i=1:b]
         else
-            _, preds, probs = decode(model, x.tokens, Txp, Txpp, z; sampler=sampler, training=false, mixsampler=mixsampler)
+            outputs, preds, probs, scores = decode(model, x.tokens, Txp, Txpp, z; sampler=sampler, training=false, mixsampler=mixsampler, viz=forviz)
+            scores  = ntuple(k->cpucopy(scores[k]), length(scores))
+            outputs = cpucopy(softmax(outputs,dims=1))
+            if forviz
+                for i=1:b
+                    @inbounds push!(samples,process_for_viz(vocab,
+                    preds[i,:],
+                    xp.tokens[i,:],
+                    xpp.tokens[i,:],
+                    ntuple(k->scores[k][:,i,:],2),
+                    outputs[:,i,:]))
+                end
+                length(samples) >= N && break
+                continue
+            end
             predstr  = mapslices(x->trim(x,vocab), preds, dims=2)
             probs2D  = reshape(probs,b,1)
             predenc  = [trimencoded(preds[i,:]) for i=1:b]
@@ -1206,7 +1212,7 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask=
                 xp  = xfield(SIGDataSet,edata[ns[1]+1],true; subtask=subtask)
                 xpp = xfield(SIGDataSet,edata[ns[2]+1],true; subtask=subtask)
                 push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
-                push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xp)))
+                push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xpp)))
             end
         end
         push!(processed, proc_set)
