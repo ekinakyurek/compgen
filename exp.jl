@@ -23,170 +23,185 @@ function get_data_model(config)
         return read_from_jacobs_format(config["path"], config)
     end
     proc  = prefix(task, config) * "_processesed.jld2"
-    @show proc
-    @show isfile(proc)
+    println("processed file: ",proc," exist: ", isfile(proc))
     if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(proc)
-        m  = MT(vocab, config; embeddings=embeddings)
+        model  = MT(vocab, config; embeddings=embeddings)
     else
         files = rawfiles(task, config)
-        p     = Parser{task}()
-        sets  = map(f->parseDataFile(f,p), files)
+        parser = Parser{task}()
+        sets  = map(f->parseDataFile(f,parser), files)
         limitdev!(sets,config["pplnum"])
-        v     = Vocabulary(first(sets),p)
-        esets = map(s->encode(s,v), sets)
+        vocab = Vocabulary(first(sets),parser)
+        esets = map(s->encode(s,vocab), sets)
         if task == YelpDataSet
-            embeddings = initializeWordEmbeddings(300; wordsDict=v.tokens.toIndex)
-            m     = MT(v, config; embeddings=embeddings)
-        # elseif task==SCANDataSet
-        #     embeddings = initializeWordEmbeddings(100; wordsDict=v.tokens.toIndex)
-        #     m     = MT(v, config; embeddings=embeddings)
+            embeddings = initializeWordEmbeddings(300; wordsDict=vocab.tokens.toIndex)
+            model = MT(vocab, config; embeddings=embeddings)
         else
             embeddings = nothing
-            m     = MT(v, config)
+            model = MT(vocab, config)
         end
-        processed  = preprocess(m, esets...)
+        processed  = preprocess(model, esets...)
         save_preprocessed_data(proc, v, processed, esets, embeddings)
     end
     if length(processed) == 2
         trn, dev = splitdata(shuffle(processed[1]),[0.9,0.1])
         processed = [trn,processed[2],dev]
     end
-    return processed, esets, m
+    return processed, esets, model
 end
 
 
-function get_data_cond_model(augmented_data, config, esets=nothing, vocab=nothing)
+function get_data_cond_model(config, vocab, esets, augmented_data=nothing)
     task    = config["task"]
     subtask = config["subtask"]
     MT      = config["condmodel"]
-    proc  = prefix(task, config) * "_$(MT)_processesed.jld2"
-    # @show proc
-    # @show isfile(proc)
-    # if isfile(proc)
-    #     processed, esets, vocab, embeddings = load_preprocessed_data(proc)
-    #     m  = MT(vocab, config; embeddings=embeddings)
-    # else
-        if esets == nothing
-            files = rawfiles(task, config)
-            p     = Parser{task}()
-            sets  = map(f->parseDataFile(f,p), files)
-            limitdev!(sets,config["pplnum"])
-            vocab = Vocabulary(first(sets),p)
-            esets = map(s->encode(s,vocab), sets)
-        end
-        if task == YelpDataSet
-            embeddings = initializeWordEmbeddings(300; wordsDict=v.tokens.toIndex)
-            m     = MT(vocab, config; embeddings=embeddings)
-        else
-            embeddings = nothing
-            m     = MT(vocab, config)
-        end
-        processed  = preprocess(m, esets...)
-    #     save_preprocessed_data(proc, vocab, processed, esets, embeddings)
-    # end
-    #augmented_part
-    augmented = map(d->encode_cond(d,vocab),augmented_data)
-
+    if task == YelpDataSet
+        embeddings = initializeWordEmbeddings(300; wordsDict=vocab.tokens.toIndex)
+        model     = MT(vocab, config; embeddings=embeddings)
+    else
+        embeddings = nothing
+        model     = MT(vocab, config)
+    end
+    processed  = preprocess(model, esets...)
+    if !isnothing(augmented_data)
+        augmented_data = map(d->encode_cond(d,vocab),augmented_data)
+    end
     if length(processed) == 2
         trn, dev = splitdata(shuffle(processed[1]),[0.95,0.05])
         processed = [trn,processed[2],dev]
     end
-
-    return augmented, processed, esets, m
+    return processed, model, augmented_data
 end
 
-function main(config, cond_config=nothing)
+function getsaveprefix(config)
+    MT       = config["model"]
+    task     = config["task"]
+    langstr  = task == SIGDataSet ? string("_lang_",config["lang"]) : ""
+    modelstr = get(config,"copy",false) ? string(MT,"_copy") : string(MT)
+    hintsstr = get(config,"hints",-1) > -1 ? string("_hints_",config["hints"]) : ""
+    seedstr  = string("_seed_",get(config,"seed",0))
+    splitstr = string("_split_",config["split"])
+    hashstr  = string("_hash_",hash(config))
+    string("checkpoints/",task,"/",modelstr,langstr,splitstr,hintsstr,seedstr,hashstr)
+end
+
+function train_generative_model(config)
     println("Preprocessing Data & Initializing Model")
     exp_time = Dates.format(Dates.now(), "mm-dd_HH.MM")
     processed, esets, model = get_data_model(config)
     task, cond, vocab =  config["task"], config["conditional"], model.vocab
     MT  = config["model"]
-    #words = [Set(map(s->join(vocab.tokens[xfield(task,s,cond)],' '),set)) for set in esets]
-    @show rand(processed[1])
-    #println("example: ",map(x->vocab.tokens[x],rand(processed[1])))
+    println("example: ",[vocab.tokens[x] for x in rand(processed[1]) if x isa Vector{Int}])
+    KLterm,trnlen = 0,1
     if MT <: Recombine || MT <: ProtoVAE
         @show KLterm = kl_calc(model)
+        KLterm = kl_calc(model)
         if task == YelpDataSet
             trnlen = 15091715
-        else
-            trnlen = length(first(pickprotos(model, processed, esets)))
-            @show trnlen
+        elseif task == SIGDataSet
+            trnlen  = length(esets[1])^2
+        elseif task==SCANDataSet
+            trnlen  = length(first(pickprotos(model, processed, esets)))
         end
-    else
-        KLterm = 0
-        trnlen = 1
     end
-
     train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
-    #samples = sample(model,processed[2])
     print_ex_samples(model,processed[2]; beam=true) # to diagnosis
-
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
     mi       = calc_mi(model, processed[2])
     testppl  = calc_ppl(model, processed[2]; trnlen=trnlen)
-    if config["calc_trainppl"]
-        println("Calculating train ppl")
-        trainppl = calc_ppl(model, processed[1]; trnlen=trnlen)
-    else
-        trainppl = nothing
+    println("Calculating val evaluations")
+    valppl  = calc_ppl(model, processed[end]; trnlen=trnlen)
+    saveprefix = getsaveprefix(config)
+    modelfile = saveprefix*"model.jld2"
+    println("saving the model to $modelfile")
+    KnetLayers.save(modelfile, "model", model)
+    open(saveprefix * ".config","w+") do f
+         printConfig(f,config)
+         println(f,"Choice Cost: ",log(trnlen))
+         println(f,"KL Cost: ",KLterm)
+         println(f, "TEST: ", testppl)
+         println(f, "VAL: ", valppl)
     end
-    println("Calculating dict ppl")
-    dictppl = calc_ppl(model, processed[end]; trnlen=trnlen)
-    existsamples, interex = [],[]
-    langstr  = task == SIGDataSet ? string("_lang_",config["lang"],"_") : "_"
-    modelstr = get(config,"copy",false) ? string(MT,"copy") : string(MT)
-    saveprefix = string("checkpoints/",task,"/",modelstr,langstr,"split_",config["split"],"_",exp_time,"_",hash(config))
-    samplefile = saveprefix*"_samples.txt"
-    println("generating and printing samples")
-    nonexistsamples, augmented_data = print_samples(model, processed, esets; beam=true, fname=samplefile, N=config["Nsamples"], subtask=config["subtask"])
-    ex_test_data = rand(processed[1],10) #[map(field->vocab.tokens[field],d) for d in rand(processed[1],10)]
-    result = (model=model, ex_test_data=ex_test_data, existsamples=existsamples,
-              nonexistsamples=nonexistsamples, homot=interex, au=au, mi=mi,
-              testppl=testppl, trainppl=trainppl, dictppl=dictppl,
-              logtrnlen=log(trnlen), KL=KLterm)
-    # println("saving the model and samples")
-    # KnetLayers.save(saveprefix * "_results.jld2", result)
-    # if task == SCANDataSet
-    #     println("converting samples to json for downstream task")
-    #     jfile = to_json(model.vocab.parser, samplefile)
-    #     println("copying samples to downstream location")
-    #     for i=0:9
-    #         cp(jfile,"geca/exp/scan_jump/retrieval/composed.$(i).json"; force=true)
-    #     end
-    # elseif task == SIGDataSet
-    #     files = rawfiles(task, config)
-    #     lang, split = config["lang"], config["split"]
-    #     datafolder  = "emnlp2018-imitation-learning-for-neural-morphology/tests/data/"
-    #     write("$(datafolder)$(lang)-train-$(split)",read(`cat data/Sigmorphon/task1/all/turkish-train-medium $(samplefile)`))
-    #     write("$(datafolder)$(lang)-dev",read(`cat $(files[2])`))
-    # end
-    #
-    # existsamples =  (trnsamples  = samples[findall(s->in(s,words[1]), samples)],
-    #                  tstsamples  = samples[findall(s->in(s,words[2]), samples)],
-    #                  dictsamples = samples[findall(s->in(s,words[end]), samples)])
-    #
-    # nonexistsamples =  samples[findall(s->(!in(s, words[1]) &&
-    #                                        !in(s, words[2]) &&
-    #                                        !in(s, words[end])), samples)]
-    # println("Generating Interpolation Examples")
-    # interex  = sampleinter(model, processed[1])
+    return saveprefix, (processed, esets, vocab)
+end
 
-    # open(saveprefix * ".config","w+") do f
-    #     println(f,config)
-    # end
-    # if task == SIGDataSet
-    #     open("sigresults.txt", "a+") do f
-    #         println(f, saveprefix, "\t", result.testppl, "\t", result.dictppl, "\t", result.logtrnlen,"\t", result.KL)
-    #     end
-    # end
-    augmented, cond_processed, cond_esets, mcond = get_data_cond_model(augmented_data, cond_config, esets, vocab)
-    cond_trn_data = Iterators.cycle(MultiIter(augmented,cond_processed[1],cond_config["paug"]))
-    train!(mcond, cond_trn_data; dev=cond_processed[end])
-    cond_eval = calc_ppl(mcond, cond_processed[2])
-    result = (mcond=mcond, augmented=augmented, cond_eval=cond_eval, result...)
-    return result
+function sample_from_generative_model(saveprefix, trndata=nothing)
+    model  = KnetLayers.load(saveprefix * "model.jld2","model")
+    config = model.config
+    task   = config["task"]
+    if isnothing(trndata)
+        proc  = prefix(config["task"], config) * "_processesed.jld2"
+        trndata = load_preprocessed_data(proc)
+    end
+    processed, esets, vocab = trndata
+    MT = typeof(model)
+    if MT <: Recombine || MT <: ProtoVAE
+        if task == YelpDataSet
+            sampler = (beam=false,)
+        elseif task == SIGDataSet
+            sampler = (mixsampler=true,beam=false)
+        elseif task==SCANDataSet
+            sampler = (beam=true,)
+        end
+    end
+    samplefile = saveprefix*"samples.txt"
+    println("generating and printing samples to $samplefile")
+    nonexistsamples, augmented_data = print_samples(model, processed, esets; fname=samplefile, N=config["N"], Nsample=config["Nsamples"], sampler...)
+    saveprefix, (processed, esets, vocab), augmented_data
+end
+
+function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
+    _, esets, vocab = trndata
+    processed, model, augmented = get_data_cond_model(config, vocab, esets, augmentedstr)
+    if !isnothing(augmented)
+        paug = config["paug"]
+        if paug != 0
+            iter = MultiIter(shuffle(augmented),shuffle(processed[1]),paug)
+            trn_data  = Iterators.cycle(iter)
+            config["n_epoch_batches"] = length(processed[1])/(1-paug)/config["B"]
+        else
+            iter = [processed[1]; augmented]
+            trn_data = Iterators.cycle(shuffle(iter))
+            config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+        end
+    else
+        iter = processed[1]
+        trn_data = Iterators.cycle(shuffle(iter))
+        config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+    end
+    train!(model, trn_data; dev=processed[end])
+    eval_test = calc_ppl(model, processed[2])
+    eval_val  = calc_ppl(model, processed[3])
+    modelfile = saveprefix*"condmodel.jld2"
+    println("saving the conditional model to $modelfile")
+    KnetLayers.save(modelfile,"model", model)
+    open(saveprefix * ".condconfig","a+") do f
+         printConfig(f,config)
+         println(f,"TEST: ", eval_test)
+         println(f,"VAL: ", eval_val)
+    end
+    saveprefix, trndata, augmentedstr
+end
+
+function main(config, condconfig=nothing; generate=true, baseline=true)
+    Knet.seed!(config["seed"])
+    if generate
+        saveprefix, trndata = train_generative_model(config)
+        _,trndata, augmentedstr = sample_from_generative_model(saveprefix, trndata)
+        if !isnothing(condconfig)
+            evaluate_cond_model(condconfig, saveprefix, trndata, augmentedstr)
+        end
+    else
+        processed, esets, m = get_data_model(config)
+        trndata = (processed, esets, m.vocab)
+        m=nothing
+        saveprefix = getsaveprefix(config)
+    end
+    if baseline && !isnothing(condconfig)
+        evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, nothing)
+    end
 end
 
 function printlatent(fname, model, data, vocab; B=16)
@@ -212,7 +227,6 @@ function printsamples(fname,words)
     end
 end
 
-
 function parse_results(fname)
     results = readlines(fname)
     for result in results
@@ -232,497 +246,33 @@ function parse_results(fname)
 end
 
 
-
-#
-# function run_experiments_simple(baseconfig)
-#     f = open("resultr.csv","w+")
-#     println(f,"H,E,Z,LR,Kappa,maxnorm,writedrop,positional,gclip,ppl")
-#     close(f)
-#     exps = get_experiments_simple()
-#     for (i,exp) in enumerate(reverse(exps))
-#         o = copy(baseconfig)
-#         o["H"], o["E"], o["Z"], lr , o["Kappa"], o["writedrop"], o["positions"], gclip  = exp
-#         o["A"] = 2o["Z"]
-#         o["optim"] = Adam(lr=lr, gclip=gclip)
-#         ppl = main_simple(o)
-#         f = open("resultr.csv","a+")
-#         println(f,(exp..., ppl))
-#         close(f)
-#     end
-# end
-
 function eval_mixed(proto, rnnlm, test; p=0.1, trnlen=1)
     proto_nllh, kl, mem, data, inds = train!(proto,test; eval=true, returnlist=true, trnlen=trnlen)
+    proto_nllh2,_ = train!(proto,test; eval=true, returnlist=true, trnlen=trnlen, prior=true)
+    proto_nllh_kl = [min(p1+kl,p2) for (p1,p2) in zip(proto_nllh,proto_nllh2)]
     sentences = [data[first(ind)] for ind in inds]
     rnn_nllh, _  = train!(rnnlm, sentences; eval=true, returnlist=true)
     nwords = sum(map(d->sum(d.x .> 4)+1, sentences))
     @show kl, mem, nwords, length(sentences)
     proto_llh  = -(proto_nllh .+ (kl+mem))
+    proto_llh  = -(proto_nllh_kl .+ mem)
     mixed_nllh = -logsumexp(hcat(proto_llh .+ log(p), -rnn_nllh .+ log(1-p)), dims=2)
     @show exp(sum(mixed_nllh)/nwords)
     -mixed_nllh, proto_llh, -rnn_nllh, sentences
+    ms = map(groupit,length.(inds))
+    xys = vcat(([x y] for (x,y) in zip(-proto_nllh .- mem, -rnn_nllh))...)
+    xy = plot(-200:20:-10,-200:20:-10)
+    plt = scatter!(xys[:,1], xys[:,2]; markersize=ms, legend=false)
+    title!("Loglikelihood NLM vs Proto")
+    yaxis!("NLM")
+    xaxis!("Neural-Editor")
+    Plots.savefig("protonlm_copy_$(config["copy"]).pdf")
+    -mixed_nllh, proto_llh, -rnn_nllh, sentences, data, inds
+ end
+
+function groupit(l)
+   if l==1; 1
+   elseif l<50 && l>1; 2
+   elseif l<300 && l>=50; 3
+   elseif l>=300; 4; end
 end
-
-
-
-
-rnnlm_sig_config = Dict(
-               "model"=> RNNLM,
-               "lang"=>"turkish",
-               "kill_edit"=>false,
-               "attend_pr"=>0,
-               "A"=>32,
-               "H"=>512,
-               "Z"=>16,
-               "E"=>64,
-               "B"=>4,
-               "attdim"=>128,
-               "concatz"=>true,
-               "optim"=>Adam(lr=0.001),
-               "kl_weight"=>0.0,
-               "kl_rate"=> 0.05,
-               "fb_rate"=>4,
-               "N"=>10000,
-               "useprior"=>true,
-               "aepoch"=>1, #20
-               "epoch"=>100,  #40
-               "Ninter"=>10,
-               "pdrop"=>0.4,
-               "calctrainppl"=>false,
-               "Nsamples"=>300,
-               "pplnum"=>1000,
-               "authresh"=>0.1,
-               "Nlayers"=>2,
-               "Kappa"=>25,
-               "max_norm"=>10.0,
-               "eps"=>1.0,
-               "activation"=>ELU,
-               "maxLength"=>45,
-               "calc_trainppl"=>false,
-               "num_examplers"=>2,
-               "dist_thresh"=>0.6,
-               "max_cnt_nb"=>10,
-               "task"=>SIGDataSet,
-               "patiance"=>8,
-               "lrdecay"=>0.5,
-               "conditional" => true,
-               "split" => "medium",
-               "splitmodifier" => "right",
-               "beam_width" => 4,
-               "writedrop" => 0.1,
-               "condmodel"=>Seq2Seq,
-               "subtask"=>"reinflection",
-               "paug"=>0.3
-               )
-
-proto_sig_config = Dict(
-               "model"=> ProtoVAE,
-               "lang"=>"turkish",
-               "kill_edit"=>false,
-               "attend_pr"=>0,
-               "A"=>32,
-               "H"=>512,
-               "Z"=>16,
-               "E"=>64,
-               "B"=>8,
-               "attdim"=>128,
-               "concatz"=>true,
-               "optim"=>Adam(lr=0.001),
-               "kl_weight"=>0.0,
-               "kl_rate"=> 0.05,
-               "fb_rate"=>4,
-               "N"=>10000,
-               "useprior"=>true,
-               "aepoch"=>1, #20
-               "epoch"=>15,  #40
-               "Ninter"=>10,
-               "pdrop"=>0.4,
-               "calctrainppl"=>false,
-               "Nsamples"=>300,
-               "pplnum"=>1000,
-               "authresh"=>0.1,
-               "Nlayers"=>2,
-               "Kappa"=>25,
-               "max_norm"=>10.0,
-               "eps"=>1.0,
-               "activation"=>ELU,
-               "maxLength"=>45,
-               "calc_trainppl"=>false,
-               "num_examplers"=>2,
-               "dist_thresh"=>0.5,
-               "max_cnt_nb"=>25,
-               "task"=>SIGDataSet,
-               "patiance"=>6,
-               "lrdecay"=>0.5,
-               "conditional" => true,
-               "split" => "medium",
-               "splitmodifier" => "right",
-               "beam_width" => 4,
-               "copy" => true,
-               "writedrop" => 0.1,
-               "attdrop" => 0.1,
-               "insert_delete_att" =>false,
-               "condmodel"=>Seq2Seq,
-               "subtask"=>"reinflection",
-               "paug"=>0.3
-               )
-
-
-
-proto_yelp_config = Dict(
-               "model"=> ProtoVAE,
-               "lang"=>"turkish",
-               "kill_edit"=>false,
-               "attend_pr"=>0,
-               "A"=>256,
-               "H"=>300,
-               "Z"=>64,
-               "E"=>300,
-               "B"=>128,
-               "attdim"=>128,
-               "concatz"=>true,
-               "optim"=>Adam(lr=0.001),
-               "kl_weight"=>0.0,
-               "kl_rate"=> 0.05,
-               "fb_rate"=>4,
-               "N"=>10000,
-               "useprior"=>true,
-               "aepoch"=>1, #20
-               "epoch"=>8,  #40
-               "Ninter"=>10,
-               "pdrop"=>0.1,
-               "calctrainppl"=>false,
-               "Nsamples"=>100,
-               "pplnum"=>1000,
-               "authresh"=>0.1,
-               "Nlayers"=>3,
-               "Kappa"=>25,
-               "max_norm"=>10.0,
-               "eps"=>1.0,
-               "activation"=>ELU,
-               "maxLength"=>25,
-               "calc_trainppl"=>false,
-               "num_examplers"=>2,
-               "dist_thresh"=>0.5,
-               "max_cnt_nb"=>10,
-               "task"=>YelpDataSet,
-               "patiance"=>4,
-               "lrdecay"=>0.5,
-               "conditional" => false,
-               "split" => "simple",
-               "splitmodifier" => "right",
-               "beam_width" => 4,
-               "copy" => false,
-               "writedrop" => 0.1,
-               "attdrop" => 0.1,
-               "insert_delete_att" =>false
-               )
-
-recombine_scan_config = Dict(
-              "model"=> Recombine,
-              "lang"=>"turkish",
-              "kill_edit"=>false,
-              "attend_pr"=>0,
-              "A"=>32,
-              "H"=>512,
-              "Z"=>16,
-              "E"=>64,
-              "B"=>32,
-              "attdim"=>128,
-              "Kpos" =>16,
-              "concatz"=>true,
-              "optim"=>Adam(lr=0.002),
-              "gradnorm"=>1.0,
-              "kl_weight"=>0.0,
-              "kl_rate"=> 0.05,
-              "fb_rate"=>4,
-              "N"=>100,
-              "useprior"=>true,
-              "aepoch"=>1, #20
-              "epoch"=>8 ,  #40
-              "Ninter"=>10,
-              "pdrop"=>0.5,
-              "calctrainppl"=>false,
-              "Nsamples"=>300,
-              "pplnum"=>1000,
-              "authresh"=>0.1,
-              "Nlayers"=>1,
-              "Kappa"=>25,
-              "max_norm"=>10.0,
-              "eps"=>1.0,
-              "activation"=>ELU,
-              "maxLength"=>45,
-              "calc_trainppl"=>false,
-              "num_examplers"=>2,
-              "dist_thresh"=>0.5,
-              "max_cnt_nb"=>5,
-              "task"=>SCANDataSet,
-              "patiance"=>4,
-              "lrdecay"=>0.5,
-              "conditional" => true,
-              "split" => "add_prim",
-              "splitmodifier" => "jump",
-              "beam_width" => 4,
-              "copy" => true,
-              "writedrop" => 0.5,
-              "outdrop" => 0.7,
-              "attdrop" => 0.0,
-              "outdrop_test" => true,
-              "positional" => true,
-              "masktags" => false,
-              "condmodel"=>Seq2Seq,
-              "subtask"=>nothing,
-              "paug"=>0.01,
-              "seperate"=>true,
-              "seperate_emb"=>false,
-              "feedcontext"=>true
-              )
-
-
-
-recombine_sig_config = Dict(
-             "model"=> Recombine,
-             "lang"=>"spanish",
-             "kill_edit"=>false,
-             "attend_pr"=>0,
-             "A"=>4,
-             "H"=>512,
-             "Z"=>2,
-             "E"=>64,
-             "B"=>32,
-             "attdim"=>128,
-             "Kpos" =>16,
-             "concatz"=>true,
-             "optim"=>Adam(lr=0.002),
-             "gradnorm"=>1.0,
-             "kl_weight"=>0.0,
-             "kl_rate"=> 0.05,
-             "fb_rate"=>4,
-             "N"=>100,
-             "aepoch"=>1, #20
-             "epoch"=>20,  #40
-             "Ninter"=>10,
-             "pdrop"=>0.5,
-             "calctrainppl"=>false,
-             "Nsamples"=>300,
-             "pplnum"=>1000,
-             "authresh"=>0.1,
-             "Nlayers"=>1,
-             "Kappa"=>1.0,
-             "max_norm"=>1.0,
-             "eps"=>0.9,
-             "activation"=>ELU,
-             "maxLength"=>45,
-             "calc_trainppl"=>false,
-             "num_examplers"=>2,
-             "dist_thresh"=>0.5,
-             "max_cnt_nb"=>5,
-             "task"=>SIGDataSet,
-             "patiance"=>6,
-             "lrdecay"=>0.5,
-             "conditional" => true,
-             "split" => "medium",
-             "splitmodifier" => "jump",
-             "beam_width" => 4,
-             "copy" => true,
-             "writedrop" => 0.3,
-             "outdrop" => 0.3,
-             "attdrop" => 0.1,
-             "outdrop_test" => false,
-             "positional" => true,
-             "masktags" => false,
-             "condmodel"=>Seq2Seq,
-             "rwritedrop"=>0.0,
-             "rpatiance"=>0,
-             "subtask"=>"analyses",
-             "paug"=>0.1,
-             "seperate"=>true,
-             "feedcontext"=>true,
-             "path"=>"jacob/morph/",
-             "seperate_emb"=>false,
-             "hints"=>4,
-             "seed"=>3
-             )
-
-
-# recombine_turk = Dict("Z" => 16,"Nsamples" => 300,"calctrainppl" => false,
-# "maxLength" => 45,"attend_pr" => 0,"calc_trainppl" => false,"attdim" => 128,"attdrop" => 0.1,
-# "split" => "medium","kl_rate" => 0.05,"max_norm" => 10.0,"optim" => Adam(0.002, 0.9, 0.999, 1.0e-8, 0, 0.0, nothing, nothing),
-# "pdrop" => 0.5,"useprior" => true,"writedrop" => 0.1,"lang" => "turkish",
-# "lrdecay" => 0.5,"fb_rate" => 4,"Ninter" => 10,"gradnorm" => 325.5951611838534,
-# "num_examplers" => 2,"H" => 512,"concatz" => true,"conditional" => true,
-# "masktags" => false,"Kpos" => 16,"task" => SIGDataSet,"patiance" => 6,
-# "Nlayers" => 2,"outdrop_test" => false,
-# "rwritedrop" => 0.1,"kl_weight" => 0.0,"rpatiance" => 0,
-# "model" => Recombine,"aepoch" => 1,"copy" => true,"B" => 16,"outdrop" => 0.1,"pplnum" => 1000,"kill_edit" => false,"eps" => 1.0,"dist_thresh" => 0.5,"max_cnt_nb" => 5,"epoch" => 15,"splitmodifier" => "jump","beam_width" => 4,"N" => 100,"activation" => ELU,"A" => 32,"E" => 128,"positional" => true,"Kappa" => 25,"authresh" => 0.1)
-
-#
-# default_config = Dict(
-#                "model"=> ProtoVAE,
-#                "lang"=>"turkish",
-#                "kill_edit"=>false,
- #               "A"=>256,
-#                "H"=>512,
-#                "Z"=>16,
-#                "E"=>32,
-#                "B"=>16,
-#                "concatz"=>true,
-#                "optim"=>Adam(lr=0.004),
-#                "kl_weight"=>0.0,
-#                "kl_rate"=> 0.05,
-#                "fb_rate"=>4,
-#                "N"=>10000,
-#                "useprior"=>true,
-#                "aepoch"=>15, #20
-#                "epoch"=>30,  #40
-#                "Ninter"=>10,
-#                "pdrop"=>0.4,
-#                "calctrainppl"=>false,
-#                "Nsamples"=>100,
-#                "pplnum"=>1000,
-#                "authresh"=>0.1,
-#                "Nlayers"=>1,
-#                "Kappa"=>25,
-#                "max_norm"=>1.0,
-#                "eps"=>0.1,
-#                "activation"=>ELU,
-#                "maxLength"=>20,
-#                "calc_trainppl"=>false,
-#                "num_examplers"=>2,
-#                "dist_thresh"=>0.5,
-#                "max_cnt_nb"=>10,
-#                "task"=>SCANDataSet,
-#                "patiance"=>6,
-#                "lrdecay"=>0.5,
-#                "conditional" => false,
-#                "split" => "simple",
-#                "splitmodifier" => "right"
-#                )
-#
-#
-#
-# proto_config = Dict(
-#               "model"=> ProtoVAE,
-#               "lang"=>"spanish",
-#               "kill_edit"=>false,
-#               "A"=>256,
-#               "H"=>256,
-#               "Z"=>16,
-#               "E"=>32,
-#               "B"=>16,
-#               "concatz"=>true,
-#               "optim"=>Adam(lr=0.004),
-#               "kl_weight"=>0.0,
-#               "kl_rate"=> 0.05,
-#               "fb_rate"=>4,
-#               "N"=>10000,
-#               "useprior"=>true,
-#               "aepoch"=>1, #20
-#               "epoch"=>30,  #40
-#               "Ninter"=>10,
-#               "pdrop"=>0.4,
-#               "calctrainppl"=>false,
-#               "Nsamples"=>100,
-#               "pplnum"=>1000,
-#               "authresh"=>0.1,
-#               "Nlayers"=>2,
-#               "Kappa"=>15,
-#               "max_norm"=>1.5,
-#               "eps"=>0.5,
-#               "activation"=>ELU,
-#               "maxLength"=>20,
-#               "calc_trainppl"=>false,
-#               "num_examplers"=>2,
-#               "dist_thresh"=>0.5,
-#               "max_cnt_nb"=>10,
-#               "task"=>SCANDataSet,
-#               "patiance"=>6,
-#               "lrdecay"=>0.5,
-#               "conditional" => false,
-#               "split" => "simple",
-#               "splitmodifier" => "right"
-#               )
-#
-# proto_config2 = Dict(
-#             "model"=> ProtoVAE,
-#             "lang"=>"turkish",
-#             "kill_edit"=>false,
-#             "A"=>256,
-#             "H"=>512,
-#             "Z"=>16,
-#             "E"=>32,
-#             "B"=>16,
-#             "concatz"=>true,
-#             "optim"=>Adam(lr=0.004),
-#             "kl_weight"=>0.0,
-#             "kl_rate"=> 0.05,
-#             "fb_rate"=>4,
-#             "N"=>10000,
-#             "useprior"=>true,
-#             "aepoch"=>1, #20
-#             "epoch"=>30,  #40
-#             "Ninter"=>10,
-#             "pdrop"=>0.4,
-#             "calctrainppl"=>false,
-#             "Nsamples"=>100,
-#             "pplnum"=>1000,
-#             "authresh"=>0.1,
-#             "Nlayers"=>2,
-#             "Kappa"=>25,
-#             "max_norm"=>10,
-#             "eps"=>0.5,
-#             "activation"=>ELU,
-#             "maxLength"=>20,
-#             "calc_trainppl"=>false,
-#             "num_examplers"=>2,
-#             "dist_thresh"=>0.5,
-#             "max_cnt_nb"=>10,
-#             "task"=>SIGDataSet,
-#             "patiance"=>6,
-#             "lrdecay"=>0.5,
-#             "conditional" => false,
-#             "split" => "simple",
-#             "splitmodifier" => "right"
-#             )
-#
-# rnn_config = Dict(
-#             "model"=> RNNLM,
-#             "lang"=>"turkish",
-#             "kill_edit"=>false,
-#             "A"=>256,
-#             "H"=>256,
-#             "Z"=>16,
-#             "E"=>32,
-#             "B"=>16,
-#             "concatz"=>true,
-#             "optim"=>Adam(lr=0.004),
-#             "kl_weight"=>0.0,
-#             "kl_rate"=> 0.05,
-#             "fb_rate"=>4,
-#             "N"=>10000,
-#             "useprior"=>true,
-#             "aepoch"=>1, #20
-#             "epoch"=>30,  #40
-#             "Ninter"=>10,
-#             "pdrop"=>0.4,
-#             "calctrainppl"=>false,
-#             "Nsamples"=>100,
-#             "pplnum"=>1000,
-#             "authresh"=>0.1,
-#             "Nlayers"=>2,
-#             "Kappa"=>15,
-#             "max_norm"=>1.0,
-#             "eps"=>0.5,
-#             "activation"=>ELU,
-#             "maxLength"=>20,
-#             "calc_trainppl"=>false,
-#             "num_examplers"=>2,
-#             "dist_thresh"=>0.5,
-#             "max_cnt_nb"=>10,
-#             "task"=>SCANDataSet,
-#             "patiance"=>6,
-#             "lrdecay"=>0.5,
-#             "conditional" => false,
-#             "split" => "simple",
-#             "splitmodifier" => "right"
-#             )

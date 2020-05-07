@@ -3,30 +3,29 @@ include("exp.jl")
 
 function run(args=ARGS)
     s = ArgParseSettings()
-    s.exc_handler=ArgParse.debug_handler
-    s.description = "Morphology Experiments"
+    s.exc_handler = ArgParse.debug_handler
+    s.description = "SCANDataSet Experiments"
     @add_arg_table! s begin
         ("--seed"; arg_type=Int; default=3; help="seed")
-        ("--hints"; arg_type=Int; default=4; help="test set hints in training set")
         ("--config"; arg_type=String; help="generative model's config file")
         ("--condconfig"; arg_type=String; help="conditional model's config file")
-        ("--H"; arg_type=Int; default=768; help="hidden dim")
-        ("--E"; arg_type=Int; default=32; help="embedding dim")
+        ("--epoch"; arg_type=Int; default=8; help="epoch")
+        ("--H"; arg_type=Int; default=512; help="hidden dim")
+        ("--E"; arg_type=Int; default=64; help="embedding dim")
         ("--Nlayers"; arg_type=Int; default=1; help="number of rnn layers")
         ("--B"; arg_type=Int; default=32; help="batch size")
-        ("--epoch"; arg_type=Int; default=20; help="epoch")
         ("--attdim"; arg_type=Int; default=128; help="attention dim")
-        ("--gradnorm"; arg_type=Float64; default=0.0; help="global gradient norm clip, 0 for none")
-        ("--writedrop"; arg_type=Float64; default=0.1; help="write dropout in copy")
-        ("--outdrop"; arg_type=Float64; default=0.5; help="output dropout in rnn")
-        ("--pdrop"; arg_type=Float64; default=0.5; help="dropout in various locations")
-        ("--attdrop"; arg_type=Float64; default=0.1; help="attention dropout in attentions ")
-        ("--optim"; arg_type=String; default="Adam(;lr=0.001)")
-        ("--subtask"; arg_type=String; default="analyses"; help="subtask for generative model, analyses or reinflection")
+        ("--gradnorm"; arg_type=Float64; default=1.0; help="global gradient norm clip, 0 for none")
+        ("--writedrop"; arg_type=Float64; default=0.5; help="write dropout in copy")
+        ("--outdrop"; arg_type=Float64; default=0.7; help="output dropout in rnn")
+        ("--pdrop"; arg_type=Float64; default=.5; help="dropout in various locations")
+        ("--attdrop"; arg_type=Float64; default=.0; help="attention dropout in attentions ")
+        ("--optim"; arg_type=String; default="Adam(;lr=0.002)")
+        ("--split"; arg_type=String; default="add_prim")
+        ("--splitmodifier"; arg_type=String; default="jump")
         ("--copy"; action=:store_true; help="copy meachanism in rnn")
         ("--outdrop_test"; action=:store_true; help="dropout on output at test time")
-        ("--seperate_emb"; action=:store_true; help="seperate embeddings for input-output")
-        ("--paug"; arg_type=Float64; default=.0; help="augmentation ratio for condtional model, 0 for direct concatenation")
+        ("--paug"; arg_type=Float64; default=0.01; help="augmentation ratio for condtional model, 0 for direct concatenation")
         ("--baseline"; action=:store_true; help="run conditional model without augmentation")
         ("--generate"; action=:store_true; help="train generative model")
     end
@@ -61,7 +60,7 @@ function run(args=ARGS)
     main(config,condconfig; generate=options["generate"], baseline=options["baseline"])
 end
 
-PROGRAM_FILE=="runexperiments.jl" && run(ARGS)
+PROGRAM_FILE=="runexperiments_scan.jl" && run(ARGS)
 #
 # function get_experiments_rnn()
 #     E          = [32, 64, 128]

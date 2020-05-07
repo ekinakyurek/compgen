@@ -532,7 +532,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
         dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i in progress(msg, 1:((length(dt)-1) ÷ model.config["B"])+1)
+        for i=1:(((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
@@ -971,14 +971,13 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
     data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing
 end
 
-
 function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="analyses")
-    eset  = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
-    vocab = model.vocab.tokens
-    set    = map(d->xfield(SIGDataSet,d,true; subtask=subtask),eset)
-    outputs = map(d->[d.lemma;[specialIndicies.iosep];d.tags], eset)
+    eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
+    vocab   = model.vocab.tokens
+    set     = map(d->xfield(SIGDataSet,d,true; subtask=subtask),eset)
+    outputs = map(d->[d.lemma;d.tags], eset)
     inputs  = map(d->d.surface, eset)
-    tags   = map(d->d.tags, eset)
+    tags    = map(d->d.tags, eset)
 
     if subtask == "reinflection"
         inputs, outputs = outputs, inputs
@@ -986,63 +985,68 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
 
     dicts = ntuple(i->Dict(),3)
     for (i,tset) in enumerate((inputs,outputs,tags))
-        dict = dicts[i]; for d in tset; for t in d;get!(dict,t,length(dict)+1); end;end
+        dict = dicts[i];
+        for d in tset;
+            for t in d;
+                dict[t] = get(dict,t,0) + 1;
+            end;
+        end
     end
 
     tag_counts = dicts[3]
 
     dicts = map(d->Set(collect(keys(d))), dicts)
 
-    rare = [t for (t,cnt) in tag_counts if cnt>1 && cnt <= 40 && isuppercase(vocab[t][1])]
-    println(vocab[rare])
+   @show tag_counts
 
-    weird_items = [
-        i for (i, tag) in enumerate(tags)
-        if length(intersect(Set(tag), Set(rare))) > 0
-    ]
+   rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 40 && isuppercase(vocab[t][1])]
+   println(vocab[rare])
 
-    # println("weird")
-    # for i in weird_items
-    #     inp, out = inputs[i], outputs[i]
-    #     println(join(vocab[inp]," "))
-    #     println(join(vocab[out]," "))
-    # end
+   weird_items = [
+       i for (i, tag) in enumerate(tags)
+       if length(intersect(Set(tag), Set(rare))) > 0
+   ]
 
-    data = []
+   # println("weird")
+   # for i in weird_items
+   #     inp, out = inputs[i], outputs[i]
+   #     println(join(vocab[inp]," "))
+   #     println(join(vocab[out]," "))
+   # end
 
-    for j=1:length(esets[2])
-        allow_exact = j % 2 == 1
-        if length(weird_items) == 0
-            push!(data, (x=Int[specialIndicies.bow], xp=set[rand(1:length(set))], xpp=set[rand(1:length(set))]))
-            continue
-        end
-        tag = rand(rare)
-        #println(vocab[tag])
-        shuffle!(weird_items)
-        i1 = rand([i for i in weird_items if tag in tags[i]])
-        #println(join(vocab[set[i1]]," "))
-        item1 = set[i1]
-        item1_out = tags[i1]
-        sort_key = i-> (!(allow_exact && tags[i] == item1_out),
-                          -length(intersect(Set(tags[i]),Set(item1_out))))
+   data = []
+   trnitems = 1:length(set)
+   for j=1:length(esets[3])
+       allow_exact = j % 2 == 1
+       if length(weird_items) == 0
+           push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems]))
+           continue
+       end
+       tag = rand(rare)
+       println(vocab[tag])
+       #println(vocab[tag])
+       shuffle!(weird_items)
+       i1 = rand([i for i in weird_items if tag in tags[i]])
+       #println(join(vocab[set[i1]]," "))
+       item1, item1_out = set[i1], tags[i1]
+       sort_key = i-> (!(allow_exact && tags[i] == item1_out),
+                         -length(intersect(Set(tags[i]),Set(item1_out))))
 
-        weird_available = sort([i for i in 1:length(set) if i != i1], by=sort_key)
-        i2 = weird_available[1]
-        item2 = set[i2]
-        item2_out = tags[i2]
+       weird_available = sort([i for i in trnitems if i != i1], by=sort_key)
+       i2 = weird_available[1]
+       item2 = set[i2]
+       item2_out = tags[i2]
 
-        all_available = sort([i for i in 1:length(set) if i != i1 && i != i2], by=sort_key)
+       all_available = sort([i for i in trnitems if i != i1 && i != i2], by=sort_key)
 
-        i3 = all_available[1]
-        item3 = set[i3]
-        for (k1,k2) in  [(i1, i2), (i1, i3), (i2, i1), (i3, i1)]
-            push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2]))
-        end
-    end
+       i3 = all_available[1]
+       item3 = set[i3]
+       for (k1,k2) in  ((i1, i2), (i1, i3), (i2, i1), (i3, i1))
+           push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2]))
+       end
+   end
 
-
-
-
+    #
     # for i=1:length(set)
     #      p_inp, p_out = inputs[i], outputs[i]
     #      p_lemmaptags = subtask == "reinflection" ? p_inp : p_out
@@ -1107,7 +1111,8 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
                     end
                     # !(specialIndicies.iosep ∈ lemmaptags && length(findall(d->d==specialIndicies.iosep, tokens)) == 1) && continue
                     # lemma, tag = split_array(lemmaptags, specialIndicies.iosep)
-                    nonexisttag =  tag ∉ tags && all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
+                    #nonexisttag =  tag ∉ tags && all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
+                    nonexisttag =  all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
                     #nonexisttag = true
                 end
                 line = io_to_line(vocab, input, output; subtask=subtask)
@@ -1115,7 +1120,7 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
                    input ∉ inputs && output ∉ outputs &&
                    all(i->haskey(inpdict,i), input) && all(i->haskey(outdict,i), output)
                    push!(printed,line)
-                   @show line
+                   #@show line
                    push!(aug_io, (input=vocab.tokens[input], output=vocab.tokens[output]))
                    push!(probs, s.probs[1])
                    length(printed) == Nsample && break
@@ -1128,6 +1133,9 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
         for i in r
              println(f,printed[i])
         end
+    end
+    if subtask == "reinflection" # FIXME: assuming that the conditional task is always "analyses"
+         aug_io = map(d->(input=d.output, output=d.input),aug_io)
     end
     return printed[r], aug_io[r]
 end
@@ -1221,14 +1229,13 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask=
     for (set,inds) in zip(esets,splits)
         proc_set = []
         for (d,i) in zip(set,inds)
-            !haskey(neighboorhoods, string(i)) && continue
+            !haskey(neighboorhoods,string(i-1)) && continue
             x  = xfield(SIGDataSet,d,true; subtask=subtask)
-            for xp_i in neighboorhoods[string(i)]
-                xp_raw = edata[xp_i[1]+1]
-                xpp_raw = edata[xp_i[2]+1]
-                xp  = xfield(SIGDataSet,xp_raw,true; subtask=subtask)
-                xpp = xfield(SIGDataSet,xpp_raw,true; subtask=subtask)
+            for ns in neighboorhoods[string(i-1)]
+                xp  = xfield(SIGDataSet,edata[ns[1]+1],true; subtask=subtask)
+                xpp = xfield(SIGDataSet,edata[ns[2]+1],true; subtask=subtask)
                 push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
+                #push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xpp)))
             end
         end
         push!(processed, proc_set)
@@ -1236,48 +1243,46 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask=
     return processed
 end
 
-
 function read_from_jacobs_format(path, config)
     println("reading from $path")
     hints, seed = config["hints"], config["seed"]
     fix = "hints-$hints.$seed"
-    data   = map(d->convert(Vector{Int},d), JSON.parsefile(path*"seqs.$fix.json"))
+    data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"seqs.$fix.json"))
     splits = JSON.parsefile(path*"splits.$fix.json")
     neighbourhoods = JSON.parsefile(path*"neighborhoods.$fix.json")
-    vocab  = JSON.parsefile(path*"vocab.json")
-    vocab  = convert(Dict{String,Int},vocab)
+    vocab = JSON.parsefile(path*"vocab.json")
+    vocab = convert(Dict{String,Int},vocab)
     for (k,v) in vocab; vocab[k] = v+1; end
-    vocab   = IndexedDict(vocab)
-    strdata = [split_array(vocab[d .+ 1][3:end-1],"<sep>") for d in data]
+    vocab = IndexedDict(vocab)
+    strdata = [split_array(vocab[d][3:end-1],"<sep>") for d in data]
     strdata = map(strdata) do  d
-        lemma, tags = split_array(d[1],isuppercaseornumeric; include=true)
-        (surface=d[2], lemma=lemma, tags=tags)
+                lemma, tags = split_array(d[1],isuppercaseornumeric; include=true)
+                (surface=d[2], lemma=lemma, tags=tags)
     end
-    augmented_data = JSON.parsefile(path*"generated.$fix.json")
+    augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
     aug = map(augmented_data) do  d
-        x = vocab[d .+ 1]
+        x = vocab[d[3:end-1]]
         if length(findall(t->t=="<sep>", x)) == 1
-            input, output = split_array(x[3:end-1],"<sep>")
-            lemma, tags = split_array(input,isuppercaseornumeric; include=true)
-            (surface=output, lemma=lemma, tags=tags)
+            input, output = split_array(x,"<sep>")
+            if any(map(isuppercaseornumeric, x))
+                lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
+                (surface=output, lemma=lemma, tags=tags)
+            else
+                nothing
+            end
         else
             nothing
         end
     end
-    aug = filter!(!isnothing, aug)
-    #strdata = map(d->(surface=d[1], lemma=String[], tags=d[2]), strdata)
-    vocab   = Vocabulary(strdata, Parser{SIGDataSet}())
-    edata   = encode(strdata,vocab)
-    splits  = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
-    esets   = [edata[s] for s in splits]
-    eaug    = encode(aug,vocab)
-    # unique_test_tags = shuffle(unique([d.tags for d in esets[2]]))
-    # unique_val_tags  = shuffle(unique([d.tags for d in esets[3]]))
-    # deleted_tags      = [unique_test_tags[1:max(0,end-Kex)];unique_val_tags[1:max(0,end-Kex)]]
-    # filter!(d->d.tags ∉ deleted_tags, esets[1])
+    aug    = filter!(!isnothing, aug)
+    println(length(aug))
+    vocab  = Vocabulary(strdata, Parser{SIGDataSet}())
+    edata  = encode(strdata,vocab)
+    splits = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
+    esets  = [edata[s] for s in splits]
+    eaug   = encode(aug,vocab)
     processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
-    MT        = config["model"]
-    model     = MT(vocab, config; embeddings=nothing)
+    model     = config["model"](vocab, config; embeddings=nothing)
     #processed  = preprocess(model, esets...)
     #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
     return processed, esets, model, eaug

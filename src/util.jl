@@ -499,3 +499,15 @@ import StringDistances: compare
 compare(x::Vector{Int},    y::Vector{Int},    dist) = compare(String(map(UInt8,x)),String(map(UInt8,y)),dist)
 compare(x::Vector{Int},    y::AbstractString, dist) = compare(x,String(map(UInt8,y)),dist)
 compare(x::AbstractString, y::Vector{Int},    dist) = compare(String(map(UInt8,x)),y,dist)
+
+"""
+    printConfig(f::IO,o::Dict{Symbol,Any})
+    Prints the configuration dictionary
+"""
+printLog(f::IO, str...) = (println(f,Dates.Time(now()),": ",str...); flush(f);)
+printConfig(o::Dict) = printConfig(Base.stdout,o)
+function printConfig(f::IO,o::Dict)
+    printLog(f,"Configuration: ")
+    for (k,v) in o; v!== nothing && println(f, k, " => " , v); end
+    flush(f)
+end
