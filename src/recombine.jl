@@ -22,36 +22,39 @@ end
 
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     dinput = config["E"]  + 2config["Z"] + (get(config,"feedcontext",false) ? config["E"] : 0)
-    aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1, init=att_winit, atype=arrtype))
-    aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
+    myinit = linear_init(config["H"])
+    lstminit = (winit=myinit, binit=zeros, finit=ones)
+    aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
+    aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
     p1     = PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true)
-    enc1   = LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"])
+    enc1   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
+
     if config["seperate"]
-        aij_k2 = Embed(param(config["attdim"],2*config["Kpos"]+1, init=att_winit, atype=arrtype))
-        aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
+        aij_k2 = Embed(param(config["attdim"],2*config["Kpos"]+1;init=torchinit, atype=arrtype))
+        aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1;init=torchinit, atype=arrtype))
         p2     = PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
-        enc2   = LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"])
+        enc2   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
     else
         p2=p1
         enc2 = enc1
     end
 
-    emb1 = load_embed(vocab, config, embeddings)
+    emb1 = load_embed(vocab, config, embeddings; winit=randn)
     if config["seperate_emb"]
-        emb2 = load_embed(vocab, config, embeddings)
+        emb2 = load_embed(vocab, config, embeddings; winit=randn)
     else
         emb2=emb1
     end
 
     Recombine{T}(emb1,
                  emb2,
-                 LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
-                 Linear(input=config["H"]+2config["attdim"], output=config["E"]),
-                 Multiply(input=config["E"], output=config["Z"]),
+                 LSTM(;input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"],lstminit...),
+                 Linear(;input=config["H"]+2config["attdim"], output=config["E"], winit=linear_init(config["H"]+2config["attdim"]), binit=linear_init(config["H"]+2config["attdim"])),
+                 Multiply(;input=config["E"], output=config["Z"], winit=torchinit),
                  enc1,
                  enc2,
                  PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"]),
-                 Linear(input=2config["H"], output=2config["Z"]),
+                 Linear(;input=2config["H"], output=2config["Z"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
                  zeroarray(arrtype,config["H"],config["Nlayers"]),
                  zeroarray(arrtype,config["H"],config["Nlayers"]),
                  p1,
@@ -282,22 +285,22 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
          end
          y,_,scores,states,_,context = decode_onestep(model, states, protos, masks, z, input, context, positions)
          if !training
-             out = At_mul_B(model.decembed.weight,y)
-             output = cat_copy_scores(model, out, scores[1], scores[2])
+             ypred = At_mul_B(model.decembed.weight,y)
+             output = cat_copy_scores(model, ypred, scores...)
              push!(outputs,output)
              i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4)
-             logout  = convert(Array, softmax(output, dims=1))
-
+             softout  = convert(Array, softmax(output, dims=1))
              if model.config["copy"]
-                 logout   = log.(sumprobs(logout, protos[1].tokens, protos[2].tokens))
+                 softout  = sumprobs(softout, protos[1].tokens, protos[2].tokens)
              end
+             logout  = log.(softout)
              if mixsampler
-                 tempout = convert(Array, softmax(logout ./ temp, dims=1))
+                 tempout = softmax(logout ./ temp, dims=1)
                  s1 = vec(mapslices(catsample, tempout, dims=1))
                  s2 = vec(mapslices(argmax, tempout, dims=1))
                  preds[:,i] = [(gen ? s2[k] : s1[k])  for (k,gen) in enumerate(is_input_generated)]
              else
-                 preds[:,i]  = vec(mapslices(sampler, logout, dims=1))
+                 preds[:,i]  = vec(mapslices(sampler, softout, dims=1))
              end
              if cond
                  pred = preds[:,i]
