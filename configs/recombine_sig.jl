@@ -16,8 +16,8 @@ config = Dict(
              "kl_weight"=>0.0,
              "kl_rate"=> 0.05,
              "fb_rate"=>4,
-             "N"=>200,
-             "Nsamples"=>500,
+             "N"=>180,
+             "Nsamples"=>180,
              "aepoch"=>1, #20
              "epoch"=>15,  #40
              "Ninter"=>10,
@@ -60,5 +60,5 @@ config = Dict(
              "seperate_emb"=>true,
              "hints"=>4,
              "seed"=>3,
-             "self_attention"=>false
+             "self_attention"=>true
              )
