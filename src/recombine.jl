@@ -338,7 +338,7 @@ function decode_onestep(model::Recombine, states, protos, masks, z, input, prev_
     else
         xi = vcat(e, z)
     end
-    out = model.decoder(xi, states[1], states[2]; hy=true, cy=true)
+    out = model.decoder(xi, states...; hy=true, cy=true)
     hbottom = vcat(out.y,xi)
     xp_attn, xp_score, xp_weight = model.xp_attention(protos.xp.context,hbottom;mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
     xpp_attn, xpp_score, xpp_weight = model.xpp_attention(protos.xpp.context,hbottom;mask=masks[2], pdrop=attdrop, positions=positions[2])
@@ -609,6 +609,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         end
 #        total_iter > 400000 && break
     end
+
     if !isnothing(dev) && !eval
         for (best, current) in zip(bestparams,parameters(model))
             copyto!(value(current),value(best))
@@ -1238,7 +1239,7 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask=
                 xp  = xfield(SIGDataSet,edata[ns[1]+1],true; subtask=subtask)
                 xpp = xfield(SIGDataSet,edata[ns[2]+1],true; subtask=subtask)
                 push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
-                #push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xpp)))
+                push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xpp)))
             end
         end
         push!(processed, proc_set)
@@ -1262,31 +1263,36 @@ function read_from_jacobs_format(path, config)
                 lemma, tags = split_array(d[1],isuppercaseornumeric; include=true)
                 (surface=d[2], lemma=lemma, tags=tags)
     end
-    augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
-    aug = map(augmented_data) do  d
-        x = vocab[d[3:end-1]]
-        if length(findall(t->t=="<sep>", x)) == 1
-            input, output = split_array(x,"<sep>")
-            if any(map(isuppercaseornumeric, x))
-                lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
-                (surface=output, lemma=lemma, tags=tags)
+    if isfile(path*"generated.$fix.json")
+        augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
+        aug = map(augmented_data) do  d
+            x = vocab[d[3:end-1]]
+            if length(findall(t->t=="<sep>", x)) == 1
+                input, output = split_array(x,"<sep>")
+                if any(map(isuppercaseornumeric, x))
+                    lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
+                    (surface=output, lemma=lemma, tags=tags)
+                    (input=output, output=input)
+                else
+                    nothing
+                end
             else
                 nothing
             end
-        else
-            nothing
         end
+        aug  = filter!(!isnothing, aug)
+    else
+        aug  = []
     end
-    aug    = filter!(!isnothing, aug)
     println(length(aug))
     vocab  = Vocabulary(strdata, Parser{SIGDataSet}())
     edata  = encode(strdata,vocab)
     splits = [Int.(splits["train"]) .+ 1, Int.(splits["test_hard"]) .+ 1,  Int.(splits["val_hard"]) .+ 1]
     esets  = [edata[s] for s in splits]
-    eaug   = encode(aug,vocab)
+    #eaug   = encode(aug,vocab)
     processed = preprocess_jacobs_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
     model     = config["model"](vocab, config; embeddings=nothing)
     #processed  = preprocess(model, esets...)
     #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
-    return processed, esets, model, eaug
+    return processed, esets, model, aug
 end

@@ -160,20 +160,23 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
         if paug != 0
             iter = MultiIter(shuffle(augmented),shuffle(processed[1]),paug)
             trn_data  = Iterators.cycle(iter)
-            config["n_epoch_batches"] = length(processed[1])/(1-paug)/config["B"]
+            n_epoch_batches = (length(processed[1]) / (1-paug)) ÷ config["B"]
         else
             iter = [processed[1]; augmented]
             trn_data = Iterators.cycle(shuffle(iter))
-            config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+            n_epoch_batches= ((length(iter)-1) ÷ config["B"])+1
         end
     else
         iter = processed[1]
         trn_data = Iterators.cycle(shuffle(iter))
-        config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+        n_epoch_batches = ((length(iter)-1) ÷ config["B"])+1
     end
+    model.config["n_epoch_batches"] = n_epoch_batches
     train!(model, trn_data; dev=processed[end])
-    eval_test = calc_ppl(model, processed[2])
-    eval_val  = calc_ppl(model, processed[3])
+    println("TEST EVALS")
+    eval_test = calc_ppl(model, processed[2]; printeval=true)
+    println("VAL EVALS")
+    eval_val  = calc_ppl(model, processed[3]; printeval=true)
     modelfile = saveprefix*"condmodel.jld2"
     println("saving the conditional model to $modelfile")
     KnetLayers.save(modelfile,"model", model)
@@ -185,7 +188,7 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
     saveprefix, trndata, augmentedstr
 end
 
-function main(config, condconfig=nothing; generate=true, baseline=true)
+function main(config, condconfig=nothing; generate=true, baseline=true, usegenerated=false)
     Knet.seed!(config["seed"])
     if generate
         saveprefix, trndata = train_generative_model(config)
@@ -194,13 +197,15 @@ function main(config, condconfig=nothing; generate=true, baseline=true)
             evaluate_cond_model(condconfig, saveprefix, trndata, augmentedstr)
         end
     else
-        processed, esets, m = get_data_model(config)
+        processed, esets, m, generated = get_data_model(config)
         trndata = (processed, esets, m.vocab)
         m=nothing
         saveprefix = getsaveprefix(config)
     end
     if baseline && !isnothing(condconfig)
-        evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, nothing)
+        augmented = usegenerated ? generated : nothing
+        println("using augmented $usegenerated , length=$(length(augmented))")
+        evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, augmented)
     end
 end
 
