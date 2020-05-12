@@ -24,7 +24,7 @@ function get_data_model(config)
     end
     proc  = prefix(task, config) * "_processesed.jld2"
     println("processed file: ",proc," exist: ", isfile(proc))
-    if isfile(proc)
+    if false#isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(proc)
         model  = MT(vocab, config; embeddings=embeddings)
     else
@@ -42,7 +42,7 @@ function get_data_model(config)
             model = MT(vocab, config)
         end
         processed  = preprocess(model, esets...)
-        save_preprocessed_data(proc, v, processed, esets, embeddings)
+        save_preprocessed_data(proc, vocab, processed, esets, embeddings)
     end
     if length(processed) == 2
         trn, dev = splitdata(shuffle(processed[1]),[0.9,0.1])

@@ -60,96 +60,91 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
                  vocab,
                  config)
 end
-#
-# function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
-#     dinput = config["E"]  + 2config["Z"] + (get(config,"feedcontext",false) ? config["E"] : 0)
-#
-#     myinit = linear_init(config["H"])
-#     lstminit = (winit=myinit, binit=myinit, finit=myinit)
-#     aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
-#     aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
-#     p1     = PositionalAttention(memory=2config["H"], query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true)
-#     enc1   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
-#     if config["seperate"]
-#         aij_k2 = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
-#         aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
-#         p2     = PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
-#         enc2   = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
-#     else
-#         p2=p1
-#         enc2 = enc1
-#     end
-#
-#     Recombine{T}(load_embed(vocab, config, embeddings; winit=randn),
-#                  load_embed(vocab, config, embeddings; winit=randn),
-#                  LSTM(;input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"],lstminit...),
-#                  Linear(;input=config["H"]+2config["attdim"], output=config["E"], winit=linear_init(config["H"]+2config["attdim"]), binit=linear_init(config["H"]+2config["attdim"])),
-#                  Multiply(input=config["E"], output=config["Z"]),
-#                  enc1,
-#                  enc2,
-#                  PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"], normalize=true),
-#                  Linear(;input=2config["H"], output=2config["Z"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
-#                  zeroarray(arrtype,config["H"],config["Nlayers"]),
-#                  zeroarray(arrtype,config["H"],config["Nlayers"]),
-#                  p1,
-#                  p2,
-#                  Pw{Float32}(2config["Z"], config["Kappa"]),
-#                  vocab,
-#                  config)
-# end
 
 calc_ppl(model::Recombine, data; trnlen=1) = train!(model, data; eval=true, dev=nothing, trnlen=trnlen)
 calc_mi(model::Recombine, data) = nothing
 calc_au(model::Recombine, data) = nothing
 sampleinter(model::Recombine, data) = nothing
 
+
 function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
-    dist = Levenshtein()
+    Random.seed!(m.config["seed"])
     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
     sets = map((train,devs...)) do set
             map(d->xfield(T,d,cond),set)
     end
     sets = map(unique,sets)
-    words = map(sets) do set
+    strs= map(sets) do set
         map(d->String(map(UInt8,d)),set)
     end
-    trnwords = first(words)
-    adjlists  = []
-    for (k,set) in enumerate(words)
+    trnstrs  = first(strs)
+    trnwords = first(sets)
+    adjlists = []
+    dist     = Levenshtein()
+    for (k,set) in enumerate(sets)
         adj = Dict((i,[]) for i=1:length(set))
         processed = []
-        for i in progress(1:length(set))
-            cw            = set[i]
-            neighbours    = []
-            cnt   = 0
-            inds  = randperm(length(trnwords))
-            for j in inds
-                w    = trnwords[j]
-                diff = compare(cw,w,dist)
-                if diff > thresh && diff != 1
-                    push!(neighbours,j)
-                    cnt+=1
-                    cnt == maxcnt && break
+        cstrs     = strs[k]
+        xp_lens, xpp_lens, total = 0.0, 0.0, 0.0
+        @inbounds for i in progress(1:length(set))
+            current_word  = set[i]
+            current_str   = cstrs[i]
+            xp_candidates = []
+            cnt = 0
+            for j in randperm(length(trnwords))
+                (k==1 && j==i) && continue
+                trn_word = trnwords[j]
+                trn_str  = trnstrs[j]
+                sdiff = length(setdiff(current_word,trn_word))
+                ldiff = compare(current_str,trn_str,dist)
+                if ldiff > 0.5 && ldiff != 1.0 && 0 < sdiff < 2
+                    push!(xp_candidates,(j,ldiff))
+                    cnt += 1
+                    cnt == 10 && break
                 end
             end
-            if isempty(neighbours)
-                push!(neighbours, rand(inds))
+            if isempty(xp_candidates)
+                if k != 1
+                    push!(xp_candidates, rand(1:length(trnwords)))
+                else
+                    continue
+                end
+            else
+                xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true))
+                #xp_candidates = first.(xp_candidates)
             end
-            for n in neighbours
-                x′′ = []
-                ntokens = sets[1][n]
-                xtokens = sets[k][i]
-                tokens = collect(setdiff(xtokens,ntokens))
-                cw     = String(map(UInt8,tokens))
-                for l in inds
+            # uniqlist = Dict()
+            for n in xp_candidates[1:min(5,end)]
+                xpp_candidates = []
+                xp_tokens      = trnwords[n]
+                diff_tokens    = setdiff(current_word,xp_tokens)
+                diff_str       = String(map(UInt8,diff_tokens))
+                for l in xp_candidates
                     if l != n && l !=i
-                        w    = trnwords[l]
-                        diff = compare(cw,w,dist)
-                        if diff > 0.5
-                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                            cnt+=1
-                            cnt == 3 && break
+                        ldiff = compare(current_str,trnstrs[l],dist)
+                        sdiff = length(setdiff(diff_tokens,trnwords[l]))
+                        #lendiff = abs(length(trnwords[l])-length(diff_tokens))
+                        if ldiff > 0.5 && sdiff==0
+                            push!(xpp_candidates,(l,ldiff))
+                            #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+                            # cnt+=1
+                            #cnt == 3 && break
                         end
+                    end
+                end
+                if isempty(xpp_candidates)
+                    if k != 1
+                        push!(processed, (x=current_word, xp=xp_tokens, xpp=rand(sets[1]))) #push!(neighbours, rand(inds))
+                    else
+                        continue
+                    end
+                else
+                    xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,3)])
+                    for xpp in xpp_candidates
+                        push!(processed, (x=current_word, xp=xp_tokens, xpp=trnwords[xpp]))
+                        # println("TARGET: ", m.vocab.tokens[current_word])
+                        # println("XP: ", m.vocab.tokens[xp_tokens])
+                        # println("XPP: ", m.vocab.tokens[trnwords[xpp]])
                     end
                 end
             end
@@ -158,6 +153,62 @@ function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
     end
     return adjlists
 end
+#
+# function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
+#     dist = Levenshtein()
+#     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
+#     sets = map((train,devs...)) do set
+#             map(d->xfield(T,d,cond),set)
+#     end
+#     sets = map(unique,sets)
+#     words = map(sets) do set
+#         map(d->String(map(UInt8,d)),set)
+#     end
+#     trnwords = first(words)
+#     adjlists  = []
+#     for (k,set) in enumerate(words)
+#         adj = Dict((i,[]) for i=1:length(set))
+#         processed = []
+#         for i in progress(1:length(set))
+#             cw            = set[i]
+#             neighbours    = []
+#             cnt   = 0
+#             inds  = randperm(length(trnwords))
+#             for j in inds
+#                 w    = trnwords[j]
+#                 diff = compare(cw,w,dist)
+#                 if diff > thresh && diff != 1
+#                     push!(neighbours,j)
+#                     cnt+=1
+#                     cnt == maxcnt && break
+#                 end
+#             end
+#             if isempty(neighbours)
+#                 push!(neighbours, rand(inds))
+#             end
+#             for n in neighbours
+#                 x′′ = []
+#                 ntokens = sets[1][n]
+#                 xtokens = sets[k][i]
+#                 tokens = collect(setdiff(xtokens,ntokens))
+#                 cw     = String(map(UInt8,tokens))
+#                 for l in inds
+#                     if l != n && l !=i
+#                         w    = trnwords[l]
+#                         diff = compare(cw,w,dist)
+#                         if diff > 0.5
+#                             push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+#                             cnt+=1
+#                             cnt == 3 && break
+#                         end
+#                     end
+#                 end
+#             end
+#         end
+#         push!(adjlists, processed)
+#     end
+#     return adjlists
+# end
 
 function beam_decode(model::Recombine, x, xp, xpp, z; forviz=false)
     T,B         = eltype(arrtype), size(z,2)
@@ -259,7 +310,7 @@ end
 
 
 
-function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
+function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.4, cond=false)
     T,B        = eltype(arrtype), size(z,2)
     H,V,E      = model.config["H"], length(model.vocab.tokens), model.config["E"]
     Kpos       = model.config["Kpos"]
@@ -532,7 +583,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
         dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i=1:(((length(dt)-1) ÷ model.config["B"])+1)
+        for i in progress(msg,1:(((length(dt)-1) ÷ model.config["B"])+1))
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
