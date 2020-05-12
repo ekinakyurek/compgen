@@ -5,7 +5,6 @@ struct Recombine{Data}
     combine::Linear
     output::Linear
     copygate::Union{Dense,Nothing}
-    copygate2::Union{Dense,Nothing}
     enclinear::Multiply
     xp_encoder::LSTM
     x_encoder::LSTM
@@ -26,12 +25,12 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
     lstminit = (winit=myinit, binit=myinit, finit=ones)
     aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
     aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1; init=torchinit, atype=arrtype))
-    p1     = PositionalAttention(memory=2config["H"], query=config["H"], att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true)
+    p1     = PositionalAttention(memory=2config["H"], query=config["H"]+config["E"] , att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true)
     enc1   = LSTM(;input=config["E"], hidden=config["H"],  bidirectional=true, numLayers=config["Nlayers"], lstminit...)
     if config["seperate"]
         aij_k2 = Embed(param(config["attdim"],2*config["Kpos"]+1;init=torchinit, atype=arrtype))
         aij_v2 = Embed(param(config["attdim"],2*config["Kpos"]+1;init=torchinit, atype=arrtype))
-        p2     = PositionalAttention(memory=2config["H"],query=config["H"], att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
+        p2     = PositionalAttention(memory=2config["H"],query=config["H"]+config["E"] , att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
         enc2   = LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
     else
         p2=p1
@@ -47,11 +46,10 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
     attentions = (p1,p2)
     if config["self_attention"]
         attentions=(attentions...,
-                    PositionalAttention(memory=config["H"],query=config["H"], att=config["attdim"],normalize=true))
+                    PositionalAttention(memory=config["H"],query=config["H"]+config["E"] , att=config["attdim"],normalize=true))
     end
     if config["copy"]
-        copygate  = Dense(input=config["H"], output=length(attentions), activation=NonAct())
-        copygate2 = Dense(input=config["H"], output=1, activation=Sigm())
+        copygate  = Dense(input=config["H"]+config["E"], output=length(attentions)+1, activation=NonAct())
     else
         copygate = nothing
     end
@@ -63,7 +61,6 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
                  Linear(;input=config["H"]+length(attentions)*config["attdim"], output=config["H"], winit=linear_init(config["H"]+2config["attdim"]), binit=linear_init(config["H"]+2config["attdim"])),
                  Linear(;input=config["H"], output=length(vocab), winit=myinit, binit=myinit),
                  copygate,
-                 copygate2,
                  Multiply(;input=config["E"], output=config["Z"], winit=torchinit),
                  enc1,
                  enc2,
@@ -176,6 +173,14 @@ function beam_search(model::Recombine, traces, protos, masks, projs, z; step=1, 
             self_proj = arrtype(copy_projection(model.vocab, preds[:,1:step]))
             self_mask = (preds[:,1:step] .== specialIndicies.mask)
             self_mask[:,1] .= true
+            for k=1:size(self_mask,1)
+                seploc = findfirst(i->i==specialIndicies.sep,preds[k,1:step])
+                if !isnothing(seploc)
+                    self_mask[k,seploc:end] .= true
+                else
+                    self_mask[k,:] .= true
+                end
+            end
             self_mask = arrtype(eltype(arrtype)(-1e18) .* self_mask')  # T' x B
         else
             self_proj, self_mask = nothing, nothing
@@ -248,7 +253,7 @@ end
 
 
 
-function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
+function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.5, cond=false)
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
     protos  = (xp=xp,xpp=xpp)
@@ -258,7 +263,7 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
     projs   = (arrtype(copy_projection(vocab, xp.tokens)),
                arrtype(copy_projection(vocab, xpp.tokens)))
     positions = (nothing,nothing)
-    limit   = training ? size(x,2)-1  : model.config["maxLength"]
+    limit   = training ? size(x,2)-1 : model.config["maxLength"]
     preds   = training ? copy(x) : ones(Int,B,limit+1) .* specialIndicies.bow
     probs   = ones(B)
     outputs, copyoutputs = [], []
@@ -273,7 +278,14 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
              self_proj = arrtype(copy_projection(vocab, preds[:,1:i]))
              self_mask = (preds[:,1:i] .== specialIndicies.mask)
              self_mask[:,1] .= true
-            # self_mask[:,end] .= (self_mask[:,end] .| is_input_generated .| is_finished)
+             for k=1:B
+                 if is_input_generated[k]
+                     seploc = findfirst(i->i==specialIndicies.sep,preds[k,1:i])
+                     self_mask[k,seploc:end] .= true
+                 else
+                     self_mask[k,:] .= true
+                 end
+             end
              self_mask = arrtype(T(-1e18) .* self_mask')
              H,B = size(states[1])
              hiddenseq = reshape(cat1d(outhiddens...),H,B,:)
@@ -329,7 +341,7 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
         xi = vcat(e, z)
     end
     out = model.decoder(xi, states[1], states[2]; hy=true, cy=true)
-    hquery = out.y
+    hquery = vcat(out.y,e)
     #hquery  = vcat(out.y,xi)
     xp_attn, _, xp_weight = model.attentions[1](protos.xp.context, hquery; mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
     xpp_attn, _, xpp_weight = model.attentions[2](protos.xpp.context, hquery; mask=masks[2], pdrop=attdrop, positions=positions[2])
@@ -346,15 +358,13 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
         pred_probs = softmax(ypred, dims=1)
         dists  = weights
         seq_probs  = softmax(model.copygate(hquery),dims=1)
-        copy_weights = model.copygate2(hquery)#pred_probs[copy:copy,:] # 1 x B
         weighted_dists = [dists[i] .* seq_probs[i:i, :]  for i=1:length(dists)]
         copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)]) .+ EPS # V X T X B TIMES T X 1 X B
         copy_probs = reshape(copy_probs,size(ypred))
-        comb_probs = log.(copy_probs .* (copy_weights .+ EPS) .+ ((1+EPS) .- copy_weights) .* pred_probs)
+        comb_probs = log.(copy_probs .+ seq_probs[end:end, :].* pred_probs)
         pred_logits = comb_probs
     else
         pred_logits  = logp(ypred, dims=1)
-        copy_weights = exp.(pred_logits[copy:copy,:])
         copy_probs   = nothing
     end
     pred_logits, (out.hidden, out.memory), attns, weights, (comb_features,), copy_probs
@@ -379,7 +389,7 @@ function encode(m::Recombine, x, xp, xpp; prior=false)
         end
         z = sample_vMF(μ, m.config["eps"], m.config["max_norm"], m.pw; prior=prior)
     else
-        z = zeroarray(arrtype,2latentsize(m),xp.batchSizes[1])
+        z = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
     end
     return z, (xp...,context=xp_context), (xpp...,context=xpp_context)
 end
@@ -408,9 +418,8 @@ end
 function loss(model::Recombine, data; average=false, eval=false, prior=false, cond=false, training=true)
     x, xp, xpp,_, unbatched = data
     B = length(first(unbatched))
-    z, Txp, Txpp = encode(model, x, xp, xpp; prior=false)
+    z, Txp, Txpp = encode(model, x, xp, xpp; prior=prior)
     output, preds,_,copylogit = decode(model, x.tokens, Txp, Txpp, z; cond=cond, training=training)
-    preds = [trimencoded(preds[i,:], eos=true) for i=1:B]
     # if !training && cond
     #     return output, preds
     # end
@@ -429,6 +438,7 @@ function loss(model::Recombine, data; average=false, eval=false, prior=false, co
         end
     end
     if !training
+        preds = [trimencoded(preds[i,:], eos=true) for i=1:B]
         return loss, preds
     else
         return loss
@@ -461,8 +471,8 @@ function getbatch(model::Recombine, iter, B)
     d           = (x, xp1, xp2) = unzip(edata)
     xp,xpp      = (xp1,xp2) #rand()>0.5 ? (xp1,xp2) : (xp2,xp1)
     x           = map(s->[bow;s;eow],limit_seq_length(x;maxL=maxL))
-    xp          = map(s->[s;eow], limit_seq_length(xp;maxL=maxL))  # FIXME: CHANGED
-    xpp         = map(s->[s;eow], limit_seq_length(xpp;maxL=maxL)) # FIXME: CHANGED
+    xp          = map(s->s, limit_seq_length(xp;maxL=maxL))  # FIXME: CHANGED
+    xpp         = map(s->s, limit_seq_length(xpp;maxL=maxL)) # FIXME: CHANGED
     pxp         = PadSequenceArray(xp, pad=mask, makefalse=true)
     pxpp        = PadSequenceArray(xpp, pad=mask, makefalse=true)
     px          = PadSequenceArray(x, pad=mask, makefalse=false)
@@ -498,6 +508,10 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
+            b = size(d[1].mask,1)
+            n = sum(d[1].mask[:,2:end])
+            ntokens += n
+            ninstances += b
             if !eval
                 J = @diff loss(model, d)
                 # if total_iter < 50
@@ -513,18 +527,16 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
                         KnetLayers.update!(value(w), g, w.opt)
                     end
                 end
+                lss += (value(J)*n)
                 #model.config["rwritedrop"] = max(model.config["rwritedrop"] - 0.0001,model.config["writedrop"])
             else
                 #J = loss(model, d; eval=true)
                 ls = loss(model, d; eval=true)
                 append!(losses,ls)
                 J = mean(ls)
+                lss += (value(J)*b)
             end
-            b = size(d[1].mask,1)
-            n = sum(d[1].mask[:,2:end])
-            lss += (value(J)*b)
-            ntokens += n
-            ninstances += b
+
             if !eval && i%500==0
                 #print_ex_samples(model, data; beam=true)
                 if !isnothing(dev)

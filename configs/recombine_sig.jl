@@ -1,7 +1,7 @@
 config = Dict(
              "model"=> Recombine,
              "lang"=>"spanish",
-             "kill_edit"=>false,
+             "kill_edit"=>true,
              "attend_pr"=>0,
              "A"=>4,
              "H"=>768,
@@ -11,7 +11,7 @@ config = Dict(
              "attdim"=>128,
              "Kpos" =>16,
              "concatz"=>true,
-             "optim"=>Adam(lr=0.001),
+             "optim"=>Adam(lr=0.0001),
              "gradnorm"=>0.0,
              "kl_weight"=>0.0,
              "kl_rate"=> 0.05,
@@ -19,7 +19,7 @@ config = Dict(
              "N"=>180,
              "Nsamples"=>180,
              "aepoch"=>1, #20
-             "epoch"=>15,  #40
+             "epoch"=>25,  #40
              "Ninter"=>10,
              "pdrop"=>0.5,
              "calctrainppl"=>false,
@@ -59,6 +59,6 @@ config = Dict(
              "path"=>"jacob/morph/",
              "seperate_emb"=>true,
              "hints"=>4,
-             "seed"=>3,
+             "seed"=>0,
              "self_attention"=>true
              )
