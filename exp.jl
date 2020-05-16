@@ -78,12 +78,12 @@ function getsaveprefix(config)
     MT       = config["model"]
     task     = config["task"]
     langstr  = task == SIGDataSet ? string("_lang_",config["lang"]) : ""
-    modelstr = get(config,"copy",false) ? string(MT,"_copy") : string(MT)
+    modelstr = string(MT)
     hintsstr = get(config,"hints",-1) > -1 ? string("_hints_",config["hints"]) : ""
     seedstr  = string("_seed_",get(config,"seed",0))
     splitstr = string("_split_",config["split"])
     hashstr  = string("_hash_",hash(config))
-    string("checkpoints/",task,"/",modelstr,langstr,splitstr,hintsstr,seedstr,hashstr)
+    string("checkpoints/",task,"/",config["lang"],"/",modelstr,hintsstr,seedstr)
 end
 
 function train_generative_model(config)
@@ -124,11 +124,13 @@ function train_generative_model(config)
          println(f, "TEST: ", testppl)
          println(f, "VAL: ", valppl)
     end
-    return saveprefix, (processed, esets, vocab)
+    return saveprefix, (processed, esets, vocab), model
 end
 
-function sample_from_generative_model(saveprefix, trndata=nothing)
-    model  = KnetLayers.load(saveprefix * "model.jld2","model")
+function sample_from_generative_model(saveprefix, trndata=nothing; model=nothing)
+    if isnothing(model)
+        model  = KnetLayers.load(saveprefix * "model.jld2","model")
+    end
     config = model.config
     task   = config["task"]
     if isnothing(trndata)
@@ -171,6 +173,7 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
         trn_data = Iterators.cycle(shuffle(iter))
         n_epoch_batches = ((length(iter)-1) ÷ config["B"])+1
     end
+    println("total data length: ", length(iter))
     model.config["n_epoch_batches"] = n_epoch_batches
     train!(model, trn_data; dev=processed[end])
     println("TEST EVALS")
@@ -188,11 +191,12 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
     saveprefix, trndata, augmentedstr
 end
 
-function main(config, condconfig=nothing; generate=true, baseline=true, usegenerated=false)
+function main(config, condconfig=nothing; generate=true, baseline=true, usegenerated=false, saveprefix=nothing)
     Knet.seed!(config["seed"])
     if generate
-        saveprefix, trndata = train_generative_model(config)
-        _,trndata, augmentedstr = sample_from_generative_model(saveprefix, trndata)
+        saveprefix, trndata, model = train_generative_model(config)
+        _,trndata, augmentedstr = sample_from_generative_model(saveprefix, trndata; model=model)
+        model = nothing; GC.gc(); KnetLayers.gc()
         if !isnothing(condconfig)
             evaluate_cond_model(condconfig, saveprefix, trndata, augmentedstr)
         end
@@ -200,11 +204,20 @@ function main(config, condconfig=nothing; generate=true, baseline=true, usegener
         processed, esets, m, generated = get_data_model(config)
         trndata = (processed, esets, m.vocab)
         m=nothing
-        saveprefix = getsaveprefix(config)
+        if isnothing(saveprefix)
+            saveprefix = getsaveprefix(config)
+        else
+            task   = config["task"]
+            parser = Parser{task}()
+            augmented_data  = parseDataFile(saveprefix*"samples.txt",parser)
+            generated = map(x->xy_field(task,x,condconfig["subtask"]),augmented_data)
+        end
     end
-    if baseline && !isnothing(condconfig)
+    if (!generate || baseline) && !isnothing(condconfig)
         augmented = usegenerated ? generated : nothing
-        println("using augmented $usegenerated , length=$(length(augmented))")
+        if usegenerated
+            println("using augmented $usegenerated , length=$(length(augmented))")
+        end
         evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, augmented)
     end
 end

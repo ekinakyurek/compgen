@@ -10,18 +10,19 @@ function run(args=ARGS)
         ("--hints"; arg_type=Int; default=4; help="test set hints in training set")
         ("--config"; arg_type=String; help="generative model's config file")
         ("--condconfig"; arg_type=String; help="conditional model's config file")
-        ("--H"; arg_type=Int; default=768; help="hidden dim")
+        ("--H"; arg_type=Int; default=512; help="hidden dim")
         ("--E"; arg_type=Int; default=32; help="embedding dim")
         ("--Nlayers"; arg_type=Int; default=1; help="number of rnn layers")
-        ("--B"; arg_type=Int; default=16; help="batch size")
+        ("--B"; arg_type=Int; default=32; help="batch size")
         ("--epoch"; arg_type=Int; default=25; help="epoch")
         ("--attdim"; arg_type=Int; default=128; help="attention dim")
-        ("--gradnorm"; arg_type=Float64; default=0.0; help="global gradient norm clip, 0 for none")
+        ("--gradnorm"; arg_type=Float64; default=1.0; help="global gradient norm clip, 0 for none")
         ("--writedrop"; arg_type=Float64; default=0.1; help="write dropout in copy")
         ("--outdrop"; arg_type=Float64; default=0.5; help="output dropout in rnn")
         ("--pdrop"; arg_type=Float64; default=0.5; help="dropout in various locations")
         ("--attdrop"; arg_type=Float64; default=0.1; help="attention dropout in attentions ")
-        ("--optim"; arg_type=String; default="Adam(;lr=0.0001)")
+        ("--optim"; arg_type=String; default="Adam(;lr=0.001)")
+        ("--lang"; arg_type=String; default="spanish")
         ("--subtask"; arg_type=String; default="reinflection"; help="subtask for generative model, analyses or reinflection")
         ("--copy"; action=:store_true; help="copy meachanism in rnn")
         ("--outdrop_test"; action=:store_true; help="dropout on output at test time")
@@ -30,6 +31,7 @@ function run(args=ARGS)
         ("--baseline"; action=:store_true; help="run conditional model without augmentation")
         ("--usegenerated"; action=:store_true; help="run conditional model without augmentation")
         ("--generate"; action=:store_true; help="train generative model")
+        ("--loadprefix"; help="sample file prefix")
     end
 
     isa(args, AbstractString) && (args=split(args))
@@ -49,6 +51,7 @@ function run(args=ARGS)
     if !isnothing(options["condconfig"])
         condconfig = eval(Meta.parse(read(options["condconfig"], String)))
         condconfig["paug"] = options["paug"]
+        condconfig["lang"] = options["lang"]
     end
 
     for (k,v) in options
@@ -59,7 +62,10 @@ function run(args=ARGS)
         end
     end
 
-    main(config,condconfig; generate=options["generate"], baseline=options["baseline"], usegenerated=options["usegenerated"])
+    main(config,condconfig; generate=options["generate"] && !options["baseline"],
+                            baseline=options["baseline"],
+                            usegenerated=options["usegenerated"],
+                            saveprefix=options["loadprefix"])
 end
 
 PROGRAM_FILE=="runexperiments.jl" && run(ARGS)

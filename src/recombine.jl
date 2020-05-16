@@ -253,7 +253,7 @@ end
 
 
 
-function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.5, cond=false)
+function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
     protos  = (xp=xp,xpp=xpp)
@@ -278,14 +278,15 @@ function decode(model::Recombine, x, xp, xpp, z; sampler=argmax, training=true, 
              self_proj = arrtype(copy_projection(vocab, preds[:,1:i]))
              self_mask = (preds[:,1:i] .== specialIndicies.mask)
              self_mask[:,1] .= true
-             for k=1:B
-                 if is_input_generated[k]
-                     seploc = findfirst(i->i==specialIndicies.sep,preds[k,1:i])
-                     self_mask[k,seploc:end] .= true
-                 else
-                     self_mask[k,:] .= true
-                 end
-             end
+             # for k=1:B
+             #     if is_input_generated[k]
+             #         seploc = findfirst(i->i==specialIndicies.sep,preds[k,1:i])
+             #         self_mask[k,seploc:end] .= true
+             #     else
+             #         self_mask[k,:] .= true
+             #     end
+             # end
+             # @show self_mask
              self_mask = arrtype(T(-1e18) .* self_mask')
              H,B = size(states[1])
              hiddenseq = reshape(cat1d(outhiddens...),H,B,:)
@@ -340,9 +341,8 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
     else
         xi = vcat(e, z)
     end
-    out = model.decoder(xi, states[1], states[2]; hy=true, cy=true)
+    out = model.decoder(xi, states...; hy=true, cy=true)
     hquery = vcat(out.y,e)
-    #hquery  = vcat(out.y,xi)
     xp_attn, _, xp_weight = model.attentions[1](protos.xp.context, hquery; mask=masks[1], pdrop=attdrop, positions=positions[1]) #positions[1]
     xpp_attn, _, xpp_weight = model.attentions[2](protos.xpp.context, hquery; mask=masks[2], pdrop=attdrop, positions=positions[2])
     attns, weights = (xp_attn,xpp_attn), (xp_weight,xpp_weight)
@@ -356,12 +356,13 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
     copy = specialIndicies.copy
     if model.config["copy"]
         pred_probs = softmax(ypred, dims=1)
-        dists  = weights
-        seq_probs  = softmax(model.copygate(hquery),dims=1)
+        dists      = weights
+        seq_probs  = softmax(model.copygate(hquery), dims=1)
+        # @show cpucopy(seq_probs)
         weighted_dists = [dists[i] .* seq_probs[i:i, :]  for i=1:length(dists)]
-        copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)]) .+ EPS # V X T X B TIMES T X 1 X B
-        copy_probs = reshape(copy_probs,size(ypred))
-        comb_probs = log.(copy_probs .+ seq_probs[end:end, :].* pred_probs)
+        copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)])  # V X T X B TIMES T X 1 X B
+        copy_probs = reshape(copy_probs,size(ypred)) .+ EPS
+        comb_probs = log.(copy_probs .+ (seq_probs[end:end, :] .* pred_probs))
         pred_logits = comb_probs
     else
         pred_logits  = logp(ypred, dims=1)
@@ -425,8 +426,8 @@ function loss(model::Recombine, data; average=false, eval=false, prior=false, co
     # end
     ytokens, ymask = x.tokens[:,2:end], x.mask[:, 2:end]
     if !eval
-        #linds = KnetLayers.findindices(output, ytokens .* ymask)
-        loss = nllmask(output, ytokens .* ymask; average=true)
+        linds = KnetLayers.findindices(output, ytokens .* ymask)
+        loss = -mean(output[linds])  #nllmask(output, ytokens .* ymask; average=true)
     else
         xinds = ytokens .* ymask
         loss = []
@@ -465,20 +466,26 @@ end
 function getbatch(model::Recombine, iter, B)
     edata = collect(Iterators.take(iter,B))
     b = length(edata); b==0 && return nothing
+
     unk, mask, eow, bow, sep = specialIndicies
     maxL = model.config["maxLength"]
+
     V = length(model.vocab.tokens)
     d           = (x, xp1, xp2) = unzip(edata)
-    xp,xpp      = (xp1,xp2) #rand()>0.5 ? (xp1,xp2) : (xp2,xp1)
-    x           = map(s->[bow;s;eow],limit_seq_length(x;maxL=maxL))
-    xp          = map(s->s, limit_seq_length(xp;maxL=maxL))  # FIXME: CHANGED
-    xpp         = map(s->s, limit_seq_length(xpp;maxL=maxL)) # FIXME: CHANGED
+    xp,xpp      = (xp1,xp2)
+
+    x           = limit_seq_length_eos_bos(x; maxL=maxL)
+    xp          = limit_seq_length(xp; maxL=maxL)  # FIXME: CHANGED
+    xpp         = limit_seq_length(xpp; maxL=maxL) # FIXME: CHANGED
+
+    px          = PadSequenceArray(x, pad=mask, makefalse=false)
     pxp         = PadSequenceArray(xp, pad=mask, makefalse=true)
     pxpp        = PadSequenceArray(xpp, pad=mask, makefalse=true)
-    px          = PadSequenceArray(x, pad=mask, makefalse=false)
+
+    seq_x       = (px...,lens=length.(x) .- 1)
     seq_xp      = (pxp...,lens=length.(xp))
     seq_xpp     = (pxpp...,lens=length.(xpp))
-    seq_x       = (px...,lens=length.(x) .- 1)
+
     Tp, Tpp     = size(seq_xp.tokens,2),  size(seq_xpp.tokens,2)
     L = V + Tp + Tpp
     xp_copymask  = copy_indices(xp, seq_x.tokens,  L, V)
@@ -504,7 +511,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
         dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i=1:(((length(dt)-1) ÷ model.config["B"])+1)
+        for t=1:(((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
@@ -517,6 +524,10 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
                 # if total_iter < 50
                 #     model.config["gradnorm"] = max(model.config["gradnorm"], 2*clip_gradient_norm_(J, Inf))
                 # else
+                # if value(J) > 2.90
+                #     println(value(J))
+                # end
+
                 if model.config["gradnorm"] > 0
                     clip_gradient_norm_(J, model.config["gradnorm"])
                 end
@@ -537,11 +548,11 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
                 lss += (value(J)*b)
             end
 
-            if !eval && i%500==0
+            if !eval && total_iter%100==0
                 #print_ex_samples(model, data; beam=true)
                 if !isnothing(dev)
-                     print_ex_samples(model, dev; beam=true)
-                     #calc_ppl(model, dev)
+                     print_ex_samples(model, dev; mixsampler=true)
+                     # calc_ppl(model, dev; trnlen=trnlen)
                 end
             end
         end
@@ -1176,12 +1187,12 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
     samples[1:N]
 end
 
-function print_ex_samples(model::Recombine, data; beam=true, mixsampler=false)
+function print_ex_samples(model::Recombine, data; beam=true, mixsampler=false, N=10)
     println("generating few examples")
     #for sampler in (sample, argmax)
     for prior in (true, false)
         println("Prior: $(prior) , attend_pr: 0.0")
-        for s in sample(model, data; N=10, sampler=argmax, prior=prior, beam=beam, mixsampler=mixsampler)
+        for s in sample(model, data; N=N, sampler=argmax, prior=prior, beam=beam, mixsampler=mixsampler)
             println("===================")
             for field in propertynames(s)
                 println(field," : ", getproperty(s,field))
@@ -1213,7 +1224,38 @@ function preprocess_jacobs_format(neighboorhoods, splits, esets, edata; subtask=
     return processed
 end
 
+
+"""
+    TRtoLower(x::Char)
+    TRtoLower(s::AbstractString)
+    lowercase function for Turkish locale
+"""
+TRtoLower(x::Char) = x=='I' ? 'ı' : lowercase(x);
+TRtoLower(s::AbstractString) = map(TRtoLower,s)
+function special_lowercase(chars, lcase)
+    newchars = similar(chars)
+    start = true
+    for (i,c) in enumerate(chars)
+        if start
+            newchars[i] = lcase(c)
+        else
+            newchars[i] = c
+        end
+        if c == " "
+            newchars[1:i] = map(lcase,newchars[1:i])
+            start = true
+        else
+            start = false
+        end
+    end
+    return newchars
+end
+
+
 function read_from_jacobs_format(path, config)
+    lang = config["lang"]
+    path = path * lang* "/"
+    lcase = lang == "turkish" ? TRtoLower : lowercase
     subtask = config["subtask"]
     println("reading from $path ,and subtask $(subtask)")
     hints, seed = config["hints"], config["seed"]
@@ -1227,8 +1269,8 @@ function read_from_jacobs_format(path, config)
     vocab = IndexedDict(vocab)
     strdata = [split_array(vocab[d][3:end-1],"<sep>") for d in data]
     strdata = map(strdata) do  d
-                lemma, tags = split_array(d[1],isuppercaseornumeric; include=true)
-                (surface=d[2], lemma=lemma, tags=tags)
+            lemma, tags = split_array(special_lowercase(d[1],lcase),isuppercaseornumeric; include=true)
+            (surface=special_lowercase(d[2],lcase), lemma=lemma, tags=tags)
     end
     if isfile(path*"generated.$fix.json")
         augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
@@ -1236,6 +1278,7 @@ function read_from_jacobs_format(path, config)
             x = vocab[d[3:end-1]]
             if length(findall(t->t=="<sep>", x)) == 1
                 input, output = split_array(x,"<sep>")
+                input, output  = special_lowercase(input,lcase), special_lowercase(output,lcase)
                 if any(map(isuppercaseornumeric, x))
                     lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
                     (surface=output, lemma=lemma, tags=tags)
