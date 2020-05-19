@@ -24,7 +24,7 @@ function get_data_model(config)
     end
     proc  = prefix(task, config) * "_processesed.jld2"
     println("processed file: ",proc," exist: ", isfile(proc))
-    if false#isfile(proc)
+    if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(proc)
         model  = MT(vocab, config; embeddings=embeddings)
     else
@@ -42,13 +42,20 @@ function get_data_model(config)
             model = MT(vocab, config)
         end
         processed  = preprocess(model, esets...)
+        println("Saving processed file: ",proc," exist: ", isfile(proc))
         save_preprocessed_data(proc, vocab, processed, esets, embeddings)
     end
+    if config["nproto"] == 0
+        processed = map(p->unique(d->d.x,p),processed)
+    elseif  config["nproto"] == 1
+        processed = map(p->unique(d->(d.x, d.xp),p),processed)
+    end
+
     if length(processed) == 2
         trn, dev = splitdata(shuffle(processed[1]),[0.9,0.1])
         processed = [trn,processed[2],dev]
     end
-    return processed, esets, model
+    return processed, esets, model, nothing
 end
 
 
@@ -78,12 +85,13 @@ function getsaveprefix(config)
     MT       = config["model"]
     task     = config["task"]
     langstr  = task == SIGDataSet ? string("_lang_",config["lang"]) : ""
-    modelstr = get(config,"copy",false) ? string(MT,"_copy") : string(MT)
+    modelstr = string(MT)
     hintsstr = get(config,"hints",-1) > -1 ? string("_hints_",config["hints"]) : ""
     seedstr  = string("_seed_",get(config,"seed",0))
     splitstr = string("_split_",config["split"])
     hashstr  = string("_hash_",hash(config))
-    string("checkpoints/",task,"/",modelstr,langstr,splitstr,hintsstr,seedstr,hashstr)
+    protostr = string("_nproto_",config["nproto"])
+    string("checkpoints/",task,"/",modelstr,protostr,hintsstr,seedstr)
 end
 
 function train_generative_model(config)
@@ -124,11 +132,13 @@ function train_generative_model(config)
          println(f, "TEST: ", testppl)
          println(f, "VAL: ", valppl)
     end
-    return saveprefix, (processed, esets, vocab)
+    return saveprefix, (processed, esets, vocab), model
 end
 
-function sample_from_generative_model(saveprefix, trndata=nothing)
-    model  = KnetLayers.load(saveprefix * "model.jld2","model")
+function sample_from_generative_model(saveprefix, trndata=nothing; model=nothing)
+    if isnothing(model)
+        model  = KnetLayers.load(saveprefix * "model.jld2","model")
+    end
     config = model.config
     task   = config["task"]
     if isnothing(trndata)
@@ -143,7 +153,7 @@ function sample_from_generative_model(saveprefix, trndata=nothing)
         elseif task == SIGDataSet
             sampler = (mixsampler=true,beam=false)
         elseif task==SCANDataSet
-            sampler = (beam=true,)
+            sampler = (mixsampler=true,beam=false)
         end
     end
     samplefile = saveprefix*"samples.txt"
@@ -160,20 +170,24 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
         if paug != 0
             iter = MultiIter(shuffle(augmented),shuffle(processed[1]),paug)
             trn_data  = Iterators.cycle(iter)
-            config["n_epoch_batches"] = length(processed[1])/(1-paug)/config["B"]
+            n_epoch_batches = (length(processed[1]) / (1-paug)) ÷ config["B"]
         else
             iter = [processed[1]; augmented]
             trn_data = Iterators.cycle(shuffle(iter))
-            config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+            n_epoch_batches= ((length(iter)-1) ÷ config["B"])+1
         end
     else
         iter = processed[1]
         trn_data = Iterators.cycle(shuffle(iter))
-        config["n_epoch_batches"] = ((length(iter)-1)/config["B"])+1
+        n_epoch_batches = ((length(iter)-1) ÷ config["B"])+1
     end
+    # println("total data length: ", length(iter))
+    model.config["n_epoch_batches"] = n_epoch_batches
     train!(model, trn_data; dev=processed[end])
-    eval_test = calc_ppl(model, processed[2])
-    eval_val  = calc_ppl(model, processed[3])
+    println("TEST EVALS")
+    eval_test = calc_ppl(model, processed[2]; printeval=true)
+    println("VAL EVALS")
+    eval_val  = calc_ppl(model, processed[3]; printeval=true)
     modelfile = saveprefix*"condmodel.jld2"
     println("saving the conditional model to $modelfile")
     KnetLayers.save(modelfile,"model", model)
@@ -185,22 +199,34 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
     saveprefix, trndata, augmentedstr
 end
 
-function main(config, condconfig=nothing; generate=true, baseline=true)
+function main(config, condconfig=nothing; generate=true, baseline=true, usegenerated=false, saveprefix=nothing)
     Knet.seed!(config["seed"])
     if generate
-        saveprefix, trndata = train_generative_model(config)
-        _,trndata, augmentedstr = sample_from_generative_model(saveprefix, trndata)
+        saveprefix, trndata, model = train_generative_model(config)
+        _,trndata, augmentedstr = sample_from_generative_model(saveprefix, trndata; model=model)
+        model = nothing; GC.gc(); KnetLayers.gc()
         if !isnothing(condconfig)
             evaluate_cond_model(condconfig, saveprefix, trndata, augmentedstr)
         end
     else
-        processed, esets, m = get_data_model(config)
+        processed, esets, m, generated = get_data_model(config)
         trndata = (processed, esets, m.vocab)
         m=nothing
-        saveprefix = getsaveprefix(config)
+        if isnothing(saveprefix)
+            saveprefix = getsaveprefix(config)
+        else
+            task   = config["task"]
+            parser = Parser{task}()
+            augmented_data  = parseDataFile(saveprefix*"samples.txt",parser)
+            generated = map(x->xy_field(task,x,condconfig["subtask"]),augmented_data)
+        end
     end
-    if baseline && !isnothing(condconfig)
-        evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, nothing)
+    if (!generate || baseline) && !isnothing(condconfig)
+        augmented = usegenerated ? generated : nothing
+        if usegenerated
+            println("using augmented $usegenerated , length=$(length(augmented))")
+        end
+        evaluate_cond_model(condconfig, saveprefix*"_baseline", trndata, augmented)
     end
 end
 

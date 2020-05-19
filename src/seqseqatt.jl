@@ -15,26 +15,27 @@ end
 
 function Seq2Seq(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     V = length(vocab)
+    myinit = linear_init(config["H"])
     attentions = (PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()),)
     if config["self_attention"]
         attentions=(attentions[1],
                     PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()))
     end
     if config["copy"]
-        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct(),winit=linear_init(config["H"]))
+        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct(), winit=myinit, binit=myinit)
     else
         copygate = nothing
     end
-    myinit = linear_init(config["H"])
+
     lstminit = (winit=myinit, binit=myinit, finit=myinit)
 
     Seq2Seq{T}(load_embed(vocab, config, embeddings; winit=randn),
                load_embed(vocab, config, embeddings; winit=randn),
-               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"],lstminit...),
-               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"],lstminit...),
+               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"], lstminit...),
+               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"], lstminit...),
                Linear(;input=2config["H"],output=config["H"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
                Linear(;input=(1+length(attentions))*config["H"],output=config["H"],winit=linear_init((1+length(attentions))*config["H"]), binit=linear_init((1+length(attentions))*config["H"])),
-               Linear(;input=config["H"], output=V, winit=linear_init(config["H"])),
+               Linear(;input=config["H"], output=V, winit=myinit, binit=myinit),
                attentions,
                copygate,
                vocab,
@@ -74,10 +75,10 @@ function decode_onestep(model::Seq2Seq, states, source, feed, input, hiddens, co
     attns, weights, projs = (source_attn,), (source_weight,), (copy_proj,)
     if model.config["self_attention"]
         H,B = size(hidden)
+        push!(hiddens, hidden)
         hidden3d = reshape(cat1d(hiddens...),H,B,:)
         self_attn, _, self_weight = model.attentions[2](hidden3d, hidden; mask=self_mask)
         attns, weights, projs = (attns[1],self_attn),(weights[1],self_weight),(projs[1], self_proj)
-        push!(hiddens, hidden)
     end
     comb_features = dropout(model.combine(vcat(hidden,attns...)), model.config["pdrop"])
     ypred = model.output(comb_features)
@@ -108,7 +109,7 @@ function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, targe
     limit      = training ? size(target,2)-1 : model.config["maxLength"]
     preds      = training ? copy(target) : ones(Int, B, limit+1) .* specialIndicies.bow
     outputs    = []
-    hiddens    = Any[zeroarray(arrtype,H,B)]
+    hiddens    = Any[]
     feed       = zeroarray(arrtype,H,B)
     copy_proj  = arrtype(copy_projection(model.vocab, source_enc.tokens))
     for i=1:limit
@@ -122,14 +123,14 @@ function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, targe
         end
          output,feed,states,_= decode_onestep(model,states,source,feed,preds[:,i],hiddens,copy_proj,self_proj,self_mask)
          if !training
-             i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4,7)
+             i == 1 ? negativemask!(output,1:7) : negativemask!(output,1:2,4,7)
          # else
          #     negativemask!(output,7)
          end
          push!(outputs,output)
          if !training
-             output = softmax(output,dims=1) |> cpucopy
-             preds[:,i+1] = vec(mapslices(sampler, output, dims=1))
+             #output = softmax(output,dims=1) |> cpucopy
+             preds[:,i+1] = vec(mapslices(argmax, (output |> cpucopy), dims=1))
          end
     end
     return reshape(cat1d(outputs...),V,B,limit), preds[:,2:end]
@@ -239,7 +240,7 @@ function loss(model::Seq2Seq, data; eval=false, returnlist=false)
     output, _ = decode(model, source_enc, finals, hiddens, target.tokens)
     if eval
         _, preds = decode(model, source_enc, finals, hiddens; training=false)
-        preds = [trimencoded(preds[i,:], eos=true) for i=1:B]
+        preds = [preds[i,:] for i=1:B]
         # preds,_ = beam_decode(model, source_enc, finals, hiddens)
         # preds = [trimencoded(preds[1][i,:]) for i=1:B]
     end
@@ -272,13 +273,13 @@ function getbatch(model::Seq2Seq, iter, B)
     unk, mask, eow, bow ,_ = specialIndicies
     inputs, outputs = unzip(edata)
     inputs  = limit_seq_length(inputs; maxL=model.config["maxLength"])
-    r = sortperm(inputs, by=length, rev=true)
-    inputs = inputs[r]
-    outputs = outputs[r]
-    outputs = limit_seq_length_eos_bos(outputs; maxL=model.config["maxLength"])
+    # r = sortperm(inputs, by=length, rev=true)
+    # inputs = inputs[r]
+    # outputs = outputs[r]
     inputs  = limit_seq_length_eos_bos(inputs; maxL=model.config["maxLength"])
-    input_packed = _pack_sequence(inputs)
-    input_enc = PadSequenceArray(inputs, pad=mask, makefalse=true)
+    outputs = limit_seq_length_eos_bos(outputs; maxL=model.config["maxLength"])
+    input_packed = inputs #_pack_sequence(inputs)
+    input_enc  = PadSequenceArray(inputs, pad=mask, makefalse=true)
     output_enc = PadSequenceArray(outputs, pad=mask, makefalse=false)
     return (source=(input_enc..., lens=length.(inputs)), target=output_enc, packed=input_packed, unbatched=(inputs, outputs))
 end
@@ -395,7 +396,7 @@ end
 
 
 function eval_seq(vocab::Vocabulary{SIGDataSet}, seq)
-    charseq = vocab.tokens[seq]
+    charseq = vocab.tokens[trimencoded(seq)]
     if any(map(isuppercaseornumeric, charseq))
         lemma, tags = split_array(charseq, isuppercaseornumeric; include=true)
         [join(lemma,""); tags]
@@ -405,10 +406,10 @@ function eval_seq(vocab::Vocabulary{SIGDataSet}, seq)
 end
 
 function eval_seq(vocab::Vocabulary{SCANDataSet}, seq)
-    charseq = vocab.tokens[seq]
+     vocab.tokens[trimencoded(seq)]
 end
 
-function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, returnlist=false)
+function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, returnlist=false, printeval=false)
     ppl = typemax(Float64)
     acc = 0.0
     if !eval
@@ -465,12 +466,19 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                     J, preds = loss(model, d; eval=true, returnlist=false)
                     lss += (J*n)
                 end
-                toutputs = map(x->x[2:end],d.unbatched[2])
-                #correct += sum(preds .== toutputs)
+                tinputs, toutputs = d.unbatched
                 for i=1:b
-                    pred_here, ref = eval_seq(model.vocab,preds[i]), eval_seq(model.vocab,toutputs[i])
-                    #println(join(model.vocab.tokens[pred_here],' '), join(model.vocab.tokens[ref],' '))
-                    correct += pred_here == ref
+                    pred_here = eval_seq(model.vocab,preds[i])
+                    ref       = eval_seq(model.vocab,toutputs[i][2:end])
+                    inp       = tinputs[i]
+                    label     = pred_here == ref
+                    correct  += label
+                    if printeval
+                        println("\nINPUT: ", join(model.vocab.tokens[inp],"")," $label")
+                        println("REF: ",  join(ref,' '))
+                        println("PRED: ", join(pred_here,' '),"\n")
+                    end
+
                     tp += length([p for p in pred_here if p ∈ ref])
                     fp += length([p for p in pred_here if p ∉ ref])
                     fn += length([p for p in ref if p ∉ pred_here])
@@ -545,7 +553,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
     return (ppl=ppl, ptokloss=ptokloss, pinstloss=pinstloss, acc=acc, f1=f1)
 end
 
-calc_ppl(model::Seq2Seq, dev) = train!(model, dev; eval=true)
+calc_ppl(model::Seq2Seq, dev; printeval=false) = train!(model, dev; eval=true, printeval=printeval)
 
 
 import Base: length, size, iterate, eltype, IteratorSize, IteratorEltype, haslength,SizeUnknown, @propagate_inbounds
@@ -602,78 +610,3 @@ function preprocess(model::Seq2Seq, train, devs...)
         end
     end
 end
-
-#
-#
-# scan_cond_config = Dict(
-#               "H"=>512,
-#               "E"=>64,
-#               "B"=>64,
-#               "attdim"=>512,
-#               "optim"=>Adam(lr=0.001),
-#               "gradnorm"=>1.0,
-#               "N"=>100,
-#               "epoch"=>150,
-#               "pdrop"=>0.5,
-#               "Nlayers"=>1,
-#               "activation"=>ELU,
-#               "maxLength"=>45,
-#               "task"=>SCANDataSet,
-#               "patiance"=>10,
-#               "lrdecay"=>0.5,
-#               "split" => "add_prim",
-#               "splitmodifier" => "jump",
-#               "beam_width" => 4,
-#               "copy" => false,
-#               "outdrop" => 0.0,
-#               "attdrop" => 0.0,
-#               "outdrop_test" => false,
-#               "positional" => false,
-#               "condmodel"=>Seq2Seq,
-#               "subtask"=>nothing,
-#               "paug"=>0.05,
-#               "model"=>Recombine,
-#               "conditional"=>true,
-#               "n_epoch_batches"=>32,
-#               "n_epoch"=>150,
-#               "bestval"=>false,
-#               "gamma"=>0,
-#               "self_attention"=>false,
-#               )
-#
-#
-# sig_cond_config = Dict(
-#             "H"=>1024,
-#             "E"=>1024,
-#             "B"=>64,
-#             "attdim"=>1024,
-#             "optim"=>Adam(lr=0.0001),
-#             "gradnorm"=>0.0,
-#             "lang"=>"spanish",
-#             "N"=>100,
-#             "epoch"=>80,
-#             "pdrop"=>0.0,
-#             "Nlayers"=>1,
-#             "activation"=>ELU,
-#             "maxLength"=>45,
-#             "task"=>SIGDataSet,
-#             "patiance"=>0,
-#             "lrdecay"=>0.9,
-#             "beam_width" => 4,
-#             "copy" => true,
-#             "self_attention"=>true,
-#             "outdrop" => 0.0,
-#             "attdrop" => 0.0,
-#             "outdrop_test" => false,
-#             "positional" => false,
-#             "condmodel"=>Seq2Seq,
-#             "subtask"=>"analyses",
-#             "split"=>"jacob",
-#             "paug"=>0.1,
-#             "model"=>Recombine,
-#             "conditional"=>true,
-#             "n_epoch_batches"=>21,
-#             "n_epoch"=>80,
-#             "bestval"=>true,
-#             "gamma"=>0.1
-#             )
