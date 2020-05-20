@@ -60,5 +60,7 @@ config = Dict(
              "seperate_emb"=>true,
              "hints"=>4,
              "seed"=>0,
-             "self_attention"=>true
+             "self_attention"=>true,
+             "nproto"=>2,
+             "temp"=>0.05
              )

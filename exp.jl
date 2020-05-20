@@ -44,6 +44,13 @@ function get_data_model(config)
         processed  = preprocess(model, esets...)
         save_preprocessed_data(proc, v, processed, esets, embeddings)
     end
+    
+    if config["nproto"] == 0
+        processed = map(p->unique(d->d.x,p),processed)
+    elseif  config["nproto"] == 1
+        processed = map(p->unique(d->(d.x, d.xp),p),processed)
+    end
+
     if length(processed) == 2
         trn, dev = splitdata(shuffle(processed[1]),[0.9,0.1])
         processed = [trn,processed[2],dev]
