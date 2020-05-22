@@ -637,7 +637,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         lss, ntokens, ninstances = 0.0, 0.0, 0.0
         dt  = Iterators.Stateful((eval ? data : shuffle(data)))
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f, PPL(test): %.2f", total_iter, lss/ntokens, lss/ninstances, ppl))
-        for i in progress(msg,1:(((length(dt)-1) ÷ model.config["B"])+1))
+        for i in 1:(((length(dt)-1) ÷ model.config["B"])+1)
             total_iter += 1
             d = getbatch(model, dt, model.config["B"])
             isnothing(d) && continue
@@ -700,6 +700,7 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         else
             println((loss=lss/ntokens,))
         end
+        flush(Base.stdout)
         if eval
             s_losses = map(inds->-logsumexp(-losses[inds]), evalinds)
             nwords = sum((sum(data[first(inds)].x .> 4)+1  for inds in evalinds))
@@ -1077,7 +1078,7 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
              @inbounds for j=1:length(set)
                 j==i && continue
                 length(set[j]) > ppthresh && continue
-                !(0 < length(setdiff(set[i],set[j])) < 2) && continue
+                model.config["split"] == "template" && !(0 < length(setdiff(set[i],set[j])) < 2) && continue
                 push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j], ID=(I=Int[],D=Int[]))) #FIXME: ID
             end
         end
@@ -1214,7 +1215,7 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
     iter = Iterators.Stateful(Iterators.cycle(shuffle(data)))
     isfile(fname) && rm(fname)
     while length(printed) < Nsample
-        for s in sample(model, iter; N=128, prior=true, beam=true, mixsampler=mixsampler, temp=model.config["temp"])
+        for s in sample(model, iter; N=128, prior=true, beam=beam, mixsampler=mixsampler, temp=model.config["temp"])
             tokens = s.sampleenc
             if iosep ∈ tokens && length(findall(d->d==iosep, tokens)) == 1
                 input, output = split_array(tokens, iosep)

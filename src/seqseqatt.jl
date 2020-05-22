@@ -474,7 +474,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                     label     = pred_here == ref
                     correct  += label
                     if printeval
-                        println("\nINPUT: ", join(model.vocab.tokens[inp],"")," $label")
+                        println("\nINPUT: ", join(model.vocab.tokens[inp],' ')," $label")
                         println("REF: ",  join(ref,' '))
                         println("PRED: ", join(pred_here,' '),"\n")
                     end

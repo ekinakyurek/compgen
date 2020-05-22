@@ -40,8 +40,8 @@ config = Dict(
               "patiance"=>4,
               "lrdecay"=>0.5,
               "conditional" => true,
-              "split" => "template",
-              "splitmodifier" => "around_right",
+              "split" => "add_prim",
+              "splitmodifier" => "jump",
               "beam_width" => 4,
               "copy" => true,
               "writedrop" => 0.5,
@@ -61,5 +61,6 @@ config = Dict(
               "use_insert_delete"=>false,
               "p(xp=x)" => 0.01,
               "nproto" => 2,
-              "temp" => 0.2
+              "temp" => 0.2,
+              "beam" => true
               )

@@ -22,7 +22,7 @@ function get_data_model(config)
     if haskey(config,"path") && task == SIGDataSet
         return read_from_jacobs_format(config["path"], config)
     end
-    proc  = prefix(task, config) * "_processesed.jld2"
+    proc  = prefix(task, config) * "_ID_processesed.jld2"
     println("processed file: ",proc," exist: ", isfile(proc))
     if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(proc)
@@ -91,7 +91,9 @@ function getsaveprefix(config)
     splitstr = string("_split_",config["split"])
     hashstr  = string("_hash_",hash(config))
     protostr = string("_nproto_",config["nproto"])
-    string("checkpoints/",task,"/",modelstr,protostr,hintsstr,seedstr)
+    vaestr   = string("_vae_",!config["kill_edit"])
+    splitstr = string("_",config["split"])
+    string("checkpoints/",task,"/",modelstr,protostr,vaestr,splitstr,seedstr)
 end
 
 function train_generative_model(config)
@@ -153,7 +155,7 @@ function sample_from_generative_model(saveprefix, trndata=nothing; model=nothing
         elseif task == SIGDataSet
             sampler = (mixsampler=true,beam=false)
         elseif task==SCANDataSet
-            sampler = (mixsampler=true,beam=false)
+            sampler = (mixsampler=!config["beam"],beam=config["beam"])
         end
     end
     samplefile = saveprefix*"samples.txt"
