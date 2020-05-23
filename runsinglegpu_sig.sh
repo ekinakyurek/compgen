@@ -9,8 +9,10 @@ for hints in 4 8 16; do
                                   --config configs/recombine_sig.jl \
                                   --copy \
 																	--nproto 2 \
+																	--epoch 25 \
 															  	--subtask reinflection \
 															  	--seperate_emb \
+																	--seperate \
 																	--kill_edit \
 															  	--generate \
 																	--lang ${LANG} \

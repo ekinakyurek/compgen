@@ -1,6 +1,7 @@
 struct Recombine{Data}
     encembed::Embed
     decembed::Embed
+    protoembed::Embed
     decoder::LSTM
     combine::Linear
     output::Linear
@@ -10,10 +11,7 @@ struct Recombine{Data}
     xp_encoder::Union{LSTM,Nothing}
     x_encoder::Union{LSTM,Nothing}
     x_xp_inter::Union{PositionalAttention,Nothing}
-#   x_xpp_inter::Attention
     z_emb::Union{Linear,Nothing}
-    h0
-    c0
     attentions
     pw::Pw
     vocab::Vocabulary{Data}
@@ -21,32 +19,35 @@ struct Recombine{Data}
 end
 
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
-    myinit = linear_init(config["H"])
+    H,E,Z,A,nproto = config["H"],config["E"],config["Z"], config["attdim"], config["nproto"]
+    myinit = linear_init(H)
     lstminit = (winit=myinit, binit=myinit, finit=myinit)
 
     if config["kill_edit"]
+        config["concatz"] = false
         x_encoder, z_emb, enc_linear, x_xp_inter  = nothing, nothing, nothing, nothing
-        dinput = config["E"] +  2config["Z"]
+        dinput = E
     else
-        enc_linear = Multiply(;input=config["E"], output=config["Z"], winit=torchinit)
-        len = config["nproto"] == 0 ? 2 : config["nproto"]
-        if config["nproto"] == 1 && config["use_insert_delete"]
+        if nproto == 1 && config["use_insert_delete"]
             x_encoder, x_xp_inter  = nothing, nothing
-            z_emb = Linear(;input=config["H"], output=2config["Z"], winit=myinit, binit=myinit)
+            z_emb = Linear(;input=H, output=2Z, winit=myinit, binit=myinit)
+            enc_linear = Multiply(;input=E, output=Z, winit=torchinit)
         else
-            z_emb = Linear(;input=len*config["H"], output=2config["Z"], winit=linear_init(len*config["H"]), binit=linear_init(len*config["H"]))
-            x_encoder  = LSTM(;input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
-            x_xp_inter =  PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct())
+            enc_linear = nothing
+            len = nproto == 0 ? 2 : nproto
+            z_emb = Linear(;input=len*H, output=2Z, winit=linear_init(len*H), binit=linear_init(len*H))
+            x_encoder = LSTM(;input=E, hidden=H, dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"], lstminit...)
+            x_xp_inter = PositionalAttention(memory=H, query=H, att=H, valT=false, queryT=false, act=NonAct())
         end
-        dinput = config["E"] +  2config["Z"]
+        dinput = E +  2Z
     end
 
-    if config["nproto"] > 0
-        dinput += (get(config,"feedcontext",false) ? config["H"] : 0)
-        attentions = (PositionalAttention(memory=config["H"], query=config["H"], att=config["attdim"], valT=false, queryT=false, act=NonAct()),)
-        xp_encoder = LSTM(;input=config["E"], hidden=config["H"],  bidirectional=true, numLayers=config["Nlayers"], lstminit...)
-        if config["nproto"] == 2  && config["seperate"]
-            attentions = (attentions...,PositionalAttention(memory=config["H"],query=config["H"],att=config["attdim"], valT=false, queryT=false, act=NonAct()))
+    if nproto > 0
+        dinput += (get(config,"feedcontext",false) ? H : 0)
+        attentions = (PositionalAttention(memory=H, query=H, att=A, valT=false, queryT=false, act=NonAct()),)
+        xp_encoder = LSTM(;input=E, hidden=H,  bidirectional=true, numLayers=config["Nlayers"], lstminit...)
+        if nproto == 2  && config["seperate"]
+            attentions = (attentions...,PositionalAttention(memory=H,query=H,att=A, valT=false, queryT=false, act=NonAct()))
         end
     else
         config["feedcontext"] = false
@@ -56,7 +57,7 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
 
 
     enc_embed = load_embed(vocab, config, embeddings; winit=randn)
-    if config["seperate_emb"]
+    if config["seperate_emb"] # Note: must be true for sigmorphon
         dec_embed = load_embed(vocab, config, embeddings; winit=randn)
     else
         dec_embed = enc_embed
@@ -65,22 +66,24 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
 
     if config["self_attention"]
         attentions=(attentions...,
-                    PositionalAttention(memory=config["H"],query=config["H"],att=config["attdim"],valT=false, queryT=false, act=NonAct()))
+                    PositionalAttention(memory=H,query=H,att=A,valT=false,queryT=false,act=NonAct()))
     end
 
     if config["copy"]
-        copygate  = Dense(input=config["H"], output=length(attentions)+1, activation=NonAct(), winit=myinit, binit=myinit)
+        copygate  = Dense(input=H, output=length(attentions), activation=NonAct(), winit=myinit, binit=myinit)
     else
         copygate = nothing
     end
 
-    project = Linear(;input=2config["H"], output=config["H"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"]))
-    combine_dim = config["H"]+length(attentions)*config["attdim"]
+    project = Linear(;input=2H, output=H, winit=linear_init(2H), binit=linear_init(2H))
+    combine_dim = H + length(attentions)*A
+    proto_embed = load_embed(1:(config["nproto"]+1), config, embeddings; winit=randn)
     Recombine{T}(enc_embed,
                  dec_embed,
-                 LSTM(;input=dinput, hidden=config["H"], numLayers=config["Nlayers"],lstminit...),
-                 Linear(;input=combine_dim, output=config["H"], winit=linear_init(combine_dim), binit=linear_init(combine_dim)),
-                 Linear(;input=config["H"], output=length(vocab), winit=myinit, binit=myinit),
+                 proto_embed,
+                 LSTM(;input=dinput, hidden=H, numLayers=config["Nlayers"],lstminit...),
+                 Linear(;input=combine_dim, output=H, winit=linear_init(combine_dim), binit=linear_init(combine_dim)),
+                 Linear(;input=H, output=length(vocab), winit=myinit, binit=myinit),
                  project,
                  copygate,
                  enc_linear,
@@ -88,10 +91,8 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
                  x_encoder,
                  x_xp_inter,
                  z_emb,
-                 zeroarray(arrtype,config["H"],config["Nlayers"]),
-                 zeroarray(arrtype,config["H"],config["Nlayers"]),
                  attentions,
-                 Pw{Float32}(2config["Z"], config["Kappa"]),
+                 Pw{Float32}(2Z, config["Kappa"]),
                  vocab,
                  config)
 end
@@ -160,10 +161,11 @@ end
 function beam_decode(model::Recombine, x, protos, z; forviz=false)
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
-    masks  = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),model.config["nproto"])
-    states  = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    masks  = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),length(protos))
+    #states  = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    states  = protos[1].finals
     context = ntuple(i->zeroarray(arrtype,model.config["H"],B), 1)
-    projs   = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),model.config["nproto"])
+    projs   = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),length(protos))
     #outhiddens = Any[states[1]]
     limit   = model.config["maxLength"]
     preds   = ones(Int,B,limit+1) .* specialIndicies.bow
@@ -267,16 +269,16 @@ end
 function decode(model::Recombine, x, protos, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
-    masks  = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),model.config["nproto"])
-    states  = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
-    context = ntuple(i->zeroarray(arrtype,model.config["H"],B), 1)
-    projs   = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),model.config["nproto"])
+    masks     = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),length(protos))
+    states    = protos[1].finals
+    context   = ntuple(i->zeroarray(arrtype,model.config["H"],B), 1)
+    projs     = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),length(protos))
     positions = (nothing,nothing)
-    limit   = training ? size(x,2)-1 : model.config["maxLength"]
-    preds   = training ? copy(x) : ones(Int,B,limit+1) .* specialIndicies.bow
-    probs   = ones(B)
+    limit     = training ? size(x,2)-1 : model.config["maxLength"]
+    preds     = training ? copy(x) : ones(Int,B,limit+1) .* specialIndicies.bow
+    probs     = ones(B)
     outputs, copyoutputs = [], []
-    outhiddens = Any[zeroarray(arrtype,size(states[1]))]
+    outhiddens = Any[states[1]]
     is_input_generated = falses(B)
     is_finished = falses(B)
     for i=1:limit
@@ -303,8 +305,8 @@ function decode(model::Recombine, x, protos, z; sampler=argmax, training=true, m
              output = cpucopy(output)
              i == 1 ? negativemask!(output,1:7) : negativemask!(output,1:2,4,7)
              if mixsampler
-                 tempout = softmax(output ./ temp, dims=1)
-                 s1 = vec(mapslices(catsample, tempout, dims=1))
+                 tempout = softmax(output, dims=1) ./ temp
+                 s1 = vec(mapslices(sample, tempout, dims=1))
                  s2 = vec(mapslices(argmax, output, dims=1))
                  preds[:,i+1] = [(gen ? s2[k] : s1[k])  for (k,gen) in enumerate(is_input_generated)]
              else
@@ -335,11 +337,19 @@ end
 
 function decode_onestep(model::Recombine, states, protos, masks, projs, z, input, prev_context, positions=nothing, hiddens=nothing, self_proj=nothing, self_mask=nothing)
     pdrop, attdrop, outdrop = model.config["pdrop"], model.config["attdrop"], model.config["outdrop"]
-    e  = dropout(model.decembed(input),pdrop)
+    e = dropout(encode_with_padding(model.decembed, input, (input .== specialIndicies.mask)), pdrop)
     if get(model.config,"feedcontext",false)
-        xi = vcat(e, z, prev_context[1])
+        if model.config["concatz"]
+            xi = vcat(e, z, prev_context[1]) # FIXME: add z to back!
+        else
+            xi = vcat(e, prev_context[1])
+        end
     else
-        xi = vcat(e, z)
+        if model.config["concatz"]
+            xi = vcat(e,z)
+        else
+            xi = e
+        end
     end
     out = model.decoder(xi, states...; hy=true, cy=true)
     hquery = out.y
@@ -365,11 +375,13 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
         pred_probs = softmax(ypred, dims=1)
         dists      = weights
         seq_probs  = softmax(model.copygate(hquery), dims=1)
-        # @show cpucopy(seq_probs)
-        weighted_dists = [dists[i] .* seq_probs[i:i, :]  for i=1:length(dists)]
+        copy_weights = pred_probs[copy:copy,:] # 1 x B
+        weighted_dists = [dists[i] .* seq_probs[i:i, :] for i=1:length(dists)]
         copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)])  # V X T X B TIMES T X 1 X B
-        copy_probs = reshape(copy_probs,size(ypred)) .+ EPS
-        comb_probs = log.(copy_probs .+ (seq_probs[end:end, :] .* pred_probs))
+        copy_probs = reshape(copy_probs,size(ypred)) .* copy_weights .+ EPS
+        comb_probs = copy_probs .+ pred_probs
+        comb_probs = log.(comb_probs)
+        negativemask!(comb_probs,copy)
         pred_logits = comb_probs
     else
         pred_logits  = logp(ypred, dims=1)
@@ -379,33 +391,23 @@ function decode_onestep(model::Recombine, states, protos, masks, projs, z, input
 end
 
 
-# function encode(m::Recombine, x, xp, xpp; prior=false)
-#     pdrop =  m.config["pdrop"]
-#     xp_context    = m.xp_encoder(dropout(m.encembed(xp.tokens), pdrop)).y
-#     xpp_context   = m.xp_encoder(dropout(m.encembed(xpp.tokens),pdrop)).y
-#     if !m.config["kill_edit"]
-#         if prior
-#             μ = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
-#         else
-#             x_context = m.x_encoder(m.encembed(x.tokens[:,2:end])).y
-#             x_embed   = source_hidden(x_context,x.lens)
-#             xp_embed  = source_hidden(xp_context,xp.lens)
-#             xpp_embed = source_hidden(xpp_context,xpp.lens)
-#             μ = m.z_emb(vcat(m.x_xp_inter(xp_embed,x_embed;feature=true)[1],
-#                              m.x_xp_inter(xpp_embed,x_embed;feature=true)[1])
-#                         )
-#         end
-#         z = sample_vMF(μ, m.config["eps"], m.config["max_norm"], m.pw; prior=prior)
-#     else
-#         z = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
-#     end
-#     return z, (xp...,context=xp_context), (xpp...,context=xpp_context)
-# end
+function encode_with_padding(embed, tokens, mask)
+    embed(tokens) .* expand(arrtype(.!mask .* 1.0),dim=1) # (E X B X T)  .* (1 X B X T)
+end
 
 function encode(m::Recombine, x, protos; ID=nothing, prior=false)
     pdrop =  m.config["pdrop"]
+    protos = map(protos) do p
+                emb = encode_with_padding(m.encembed, p.tokens, p.mask)
+                emb = emb .+ m.protoembed(p.proto_indicies) # is defined ?
+                emb = dropout(emb,pdrop)
+                out = m.xp_encoder(emb; hy=true, cy=true)
+                states = (out.hidden, out.memory)
+                finals = ntuple(i->states[i][:,:,1] .+ states[i][:,:,2],2)
+                context = m.project(out.y) # 2H -> H
+                (p...,context=context,finals=finals)
+            end
     IDcontext = nothing
-    protos = map(p->(p...,context=m.project(m.xp_encoder(dropout(m.encembed(p.tokens), pdrop)).y)), protos)
     if !m.config["kill_edit"]
         if prior
             μ = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
@@ -511,7 +513,7 @@ function getbatch(model::Recombine, iter, B)
     maxL = model.config["maxLength"]
 
     V = length(model.vocab.tokens)
-    d           = (x, xp1, xp2, ID) = unzip(edata)
+    d  = (x, xp1, xp2, ID) = unzip(edata)
     if config["nproto"] == 2
         protos = (xp1,xp2) #rand()>0.5 ? (xp1,xp2) : (xp2,xp1)
     elseif config["nproto"] == 1
@@ -532,8 +534,20 @@ function getbatch(model::Recombine, iter, B)
         ID = (I=pI[1], D=pD[1], Imask=pI[2], Dmask=pD[2])
     end
 
-    x           = limit_seq_length_eos_bos(x; maxL=maxL)
-    xps         = ntuple(i->map(s->[s;eow],limit_seq_length(protos[i];maxL=maxL)), length(protos))
+    x           = map(s->[bow;s;eow],x)
+    xps         = ntuple(i->map(p->[bow;p],protos[i]), length(protos))
+    n_padded    = nothing
+    if config["nproto"] == 2 && !config["seperate"]
+        n_types = map(zip(xps[1],xps[2])) do (p1,p2)
+            [2ones(Int,length(p1));3ones(Int, length(p2))]
+        end
+
+        n_padded = PadSequenceArray(n_types, pad=1, makefalse=true).tokens
+
+        xps = (map(zip(xps[1],xps[2])) do (p1,p2)
+            [p1;p2]
+        end,)
+    end
     pxps        = map(p->PadSequenceArray(p, pad=mask, makefalse=true),xps)
     #
     # xp          = limit_seq_length(xp; maxL=maxL)  # FIXME: CHANGED
@@ -544,7 +558,7 @@ function getbatch(model::Recombine, iter, B)
     # pxpp        = PadSequenceArray(xpp, pad=mask, makefalse=true)
 
     seq_x       = (px...,lens=length.(x) .- 1)
-    seq_protos  = ntuple(i->(pxps[i]...,lens=length.(xps[i])),length(protos))
+    seq_protos  = ntuple(i->(proto_indicies=n_padded,pxps[i]...,lens=length.(xps[i])),length(pxps))
     # seq_xp      = (pxp...,lens=length.(xp))
     # seq_xpp     = (pxpp...,lens=length.(xpp))
 
@@ -780,6 +794,7 @@ function viz(model, data; N=5)
         ntuple(i->println("p$i :", join(model.vocab.tokens[protos[i]],' ')), length(protos))
     end
 end
+
 function removeunicodes(toElement)
     vocab = copy(toElement)
     vocab[1:4] = ["<unk>", "<mask>", "<eow>", "<bow>"]
@@ -1068,6 +1083,7 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
    @show tag_counts
 
    rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 40 && isuppercase(vocab[t][1])]
+   rare = [vocab["PST"],vocab["FUT"]]
    println(vocab[rare])
 
    weird_items = [
@@ -1090,11 +1106,12 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
            push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems]. ID=(I=Int[],D=Int[])))
            continue
        end
-       tag = rand(rare)
-       println(vocab[tag])
-       #println(vocab[tag])
-       shuffle!(weird_items)
-       i1 = rand([i for i in weird_items if tag in tags[i]])
+       # tag = rand(rare)
+       # println(vocab[tag])
+       # #println(vocab[tag])
+       # shuffle!(weird_items)
+       # i1 = rand([i for i in weird_items if tag in tags[i]])
+       i1 = rand(weird_items)
        #println(join(vocab[set[i1]]," "))
        item1, item1_out = set[i1], tags[i1]
        sort_key = i-> (!(allow_exact && tags[i] == item1_out),
@@ -1155,10 +1172,14 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
     nonexisttag, iosep = true, specialIndicies.sep
     printed, aug_io, probs = String[], [], []
     data, inputs, outputs, inpdict, outdict, tags, tagdict = pickprotos(model, processed, esets; subtask=subtask)
+    # @show length(data)
     #data = [processed[2];processed[3]] # when you want to cheat!
     iter = Iterators.Stateful(Iterators.cycle(shuffle(data)))
+    cnt = 0
     while length(printed) < Nsample
-        for s in sample(model, iter; N=128, prior=true, beam=beam, mixsampler=mixsampler, temp=model.config["temp"])
+        samples = sample(model, iter; N=100, prior=true, beam=beam, mixsampler=mixsampler, temp=model.config["temp"])
+        cnt += length(samples)
+        for s in samples
             tokens = s.sampleenc
             if iosep ∈ tokens && length(findall(d->d==iosep, tokens)) == 1
                 input, output = split_array(tokens, iosep)
@@ -1180,21 +1201,24 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
                 end
                 line = io_to_line(vocab, input, output; subtask=subtask)
                 if line ∉ printed &&
-                   nonexisttag &&
-                   input ∉ inputs &&
-                   output ∉ outputs &&
+                   nonexisttag && #input ∉ inputs && # output ∉ outputs &&
                    all(i->haskey(inpdict,i), input) &&
                    all(i->haskey(outdict,i), output)
                    push!(printed,line)
-                   #@show line
+                   # @show line
+                   # @show cnt
+                   # @show length(printed)
                    push!(aug_io, (input=vocab.tokens[input], output=vocab.tokens[output]))
                    push!(probs, s.probs[1])
                    length(printed) == Nsample && break
                 end
             end
         end
+        if cnt >= length(data) # for sigmorphon
+            break
+        end
     end
-    r = sortperm(probs; rev=true)[1:N]
+    r = sortperm(probs; rev=true)[1:min(N,end)]
     open(fname, "w+") do f
         for i in r; println(f,printed[i]); end
     end
