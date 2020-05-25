@@ -163,7 +163,13 @@ function beam_decode(model::Recombine, x, protos, z; forviz=false)
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
     masks  = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),length(protos))
     #states  = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
-    states  = protos[1].finals
+    if length(protos) == 1
+        states  = protos[1].finals
+    elseif length(protos) == 2
+        states  = ntuple(i->(protos[1].finals[i] .+ protos[2].finals[i])/2,2)
+    else
+        states  = (zeroarray(arrtype,H,B,model.config["Nlayers"]), zeroarray(arrtype,H,B,model.config["Nlayers"]))
+    end
     context = ntuple(i->zeroarray(arrtype,model.config["H"],B), 1)
     projs   = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),length(protos))
     #outhiddens = Any[states[1]]
@@ -270,7 +276,13 @@ function decode(model::Recombine, x, protos, z; sampler=argmax, training=true, m
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
     masks     = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),length(protos))
-    states    = protos[1].finals
+    if length(protos) == 1
+        states  = protos[1].finals
+    elseif length(protos) == 2
+        states  = ntuple(i->(protos[1].finals[i] .+ protos[2].finals[i])/2,2)
+    else
+        states  = (zeroarray(arrtype,H,B,model.config["Nlayers"]), zeroarray(arrtype,H,B,model.config["Nlayers"]))
+    end
     context   = ntuple(i->zeroarray(arrtype,model.config["H"],B), 1)
     projs     = ntuple(i->arrtype(copy_projection(vocab, protos[i].tokens)),length(protos))
     positions = (nothing,nothing)
@@ -305,8 +317,8 @@ function decode(model::Recombine, x, protos, z; sampler=argmax, training=true, m
              output = cpucopy(output)
              i == 1 ? negativemask!(output,1:7) : negativemask!(output,1:2,4,7)
              if mixsampler
-                 tempout = softmax(output, dims=1) ./ temp
-                 s1 = vec(mapslices(sample, tempout, dims=1))
+                 tempout = softmax(output ./ temp, dims=1)
+                 s1 = vec(mapslices(catsample, tempout, dims=1))
                  s2 = vec(mapslices(argmax, output, dims=1))
                  preds[:,i+1] = [(gen ? s2[k] : s1[k])  for (k,gen) in enumerate(is_input_generated)]
              else
@@ -399,7 +411,9 @@ function encode(m::Recombine, x, protos; ID=nothing, prior=false)
     pdrop =  m.config["pdrop"]
     protos = map(protos) do p
                 emb = encode_with_padding(m.encembed, p.tokens, p.mask)
-                emb = emb .+ m.protoembed(p.proto_indicies) # is defined ?
+                if !isnothing(p.proto_indicies)
+                    emb = emb .+ m.protoembed(p.proto_indicies) # is defined ?
+                end
                 emb = dropout(emb,pdrop)
                 out = m.xp_encoder(emb; hy=true, cy=true)
                 states = (out.hidden, out.memory)
@@ -413,10 +427,11 @@ function encode(m::Recombine, x, protos; ID=nothing, prior=false)
             μ = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
         else
             if !config["use_insert_delete"]
-                x_context = m.project(m.x_encoder(m.encembed(x.tokens[:,2:end])).y)
-                x_embed   = source_hidden(x_context,x.lens)
+                x_context = m.x_encoder(m.encembed(x.tokens[:,2:end]); hy=true).hidden
+                x_embed   = x_context[:,:,1] .+ x_context[:,:,2]
+                # x_embed   = source_hidden(x_context,x.lens)
                 if config["nproto"] > 0
-                    embeds    = map(p->source_hidden(p.context,p.lens),protos)
+                    embeds    = map(p->p.finals[1],protos)
                     inters    = map(e->m.x_xp_inter(e,x_embed;feature=true)[1],embeds)
                     μ = m.z_emb(vcat(inters...))
                 else
@@ -534,8 +549,9 @@ function getbatch(model::Recombine, iter, B)
         ID = (I=pI[1], D=pD[1], Imask=pI[2], Dmask=pD[2])
     end
 
-    x           = map(s->[bow;s;eow],x)
-    xps         = ntuple(i->map(p->[bow;p],protos[i]), length(protos))
+    #x           = map(s->[bow;s;eow],x)
+    x           = limit_seq_length_eos_bos(x; maxL=maxL)
+    xps         = ntuple(i->map(p->[bow;p],limit_seq_length(protos[i]; maxL=maxL)), length(protos))
     n_padded    = nothing
     if config["nproto"] == 2 && !config["seperate"]
         n_types = map(zip(xps[1],xps[2])) do (p1,p2)
@@ -1294,7 +1310,7 @@ function print_ex_samples(model::Recombine, data; beam=true, mixsampler=false, N
     #for sampler in (sample, argmax)
     for prior in (true, false)
         println("Prior: $(prior) , attend_pr: 0.0")
-        for s in sample(model, data; N=N, sampler=argmax, prior=prior, beam=beam, mixsampler=mixsampler)
+        for s in sample(model, data; N=N, sampler=argmax, prior=prior, beam=beam, mixsampler=mixsampler, temp=model.config["temp"])
             println("===================")
             for field in propertynames(s)
                 println(field," : ", getproperty(s,field))

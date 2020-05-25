@@ -12,9 +12,9 @@ for hints in 4 8 16; do
 																	--epoch 25 \
 															  	--subtask reinflection \
 															  	--seperate_emb \
-																	--seperate \
 																	--kill_edit \
 															  	--generate \
+																	--temp 0.5 \
 																	--lang ${LANG} \
 	                                > checkpoints/SIGDataSet/${LANG}/logs/evaluate.hints-$hints.$seed.gen.out \
 	                                2> checkpoints/SIGDataSet/${LANG}/logs/evaluate.hints-$hints.$seed.gen.err
