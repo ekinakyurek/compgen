@@ -1,16 +1,16 @@
 struct Recombine{Data}
     encembed::Embed
     decembed::Embed
+    protoembed::Embed
     decoder::LSTM
     output::Linear
+    project::Linear
     enclinear::Union{Multiply,Nothing}
     xp_encoder::Union{LSTM,Nothing}
     x_encoder::Union{LSTM,Nothing}
     x_xp_inter::Union{PositionalAttention,Nothing}
 #   x_xpp_inter::Attention
     z_emb::Union{Linear,Nothing}
-    h0
-    c0
     proto_attentions
     # xpp_attention::Union{PositionalAttention,Nothing}
     pw::Pw
@@ -22,18 +22,19 @@ end
 
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     if config["kill_edit"]
+        config["concatz"] = false
         x_encoder, z_emb, enc_linear, x_xp_inter  = nothing, nothing, nothing, nothing
-        dinput = config["E"] +  2config["Z"]
+        dinput = config["E"]
     else
         enc_linear = Multiply(input=config["E"], output=config["Z"])
-        len = config["nproto"] == 0 ? 2 : config["nproto"]
+        len = config["nproto"] == 0 ? 2 : config["nproto"]+1
         if config["nproto"] == 1 && config["use_insert_delete"]
             x_encoder, x_xp_inter  = nothing, nothing
             z_emb = Linear(input=2config["Z"], output=2config["Z"])
         else
             z_emb = Linear(input=len*config["H"], output=2config["Z"])
             x_encoder  = LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"])
-            x_xp_inter =  PositionalAttention(memory=2config["H"], query=2config["H"], att=config["H"])
+            x_xp_inter =  nothing #PositionalAttention(memory=config["H"], query=config["H"], att=config["H"]; valT=false, keyT=false)
         end
         dinput = config["E"] +  2config["Z"]
     end
@@ -42,12 +43,12 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
         dinput += (get(config,"feedcontext",false) ? config["E"] : 0)
         aij_k  = Embed(param(config["attdim"],2*config["Kpos"]+1, init=att_winit, atype=arrtype))
         aij_v  = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
-        xp_att  = (PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true),)
+        xp_att  = (PositionalAttention(memory=config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k, aij_v=aij_v, normalize=true),)
         xp_encoder  = LSTM(input=config["E"], hidden=config["H"], dropout=config["pdrop"], bidirectional=true, numLayers=config["Nlayers"])
         if config["nproto"] == 2  && config["seperate"]
             aij_k2  = Embed(param(config["attdim"],2*config["Kpos"]+1, init=att_winit, atype=arrtype))
             aij_v2  = Embed(param(config["attdim"],2*config["Kpos"]+1,; atype=arrtype))
-            xpp_att = PositionalAttention(memory=2config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
+            xpp_att = PositionalAttention(memory=config["H"],query=config["H"]+dinput, att=config["attdim"], aij_k=aij_k2, aij_v=aij_v2, normalize=true)
             xp_att  = (xp_att...,xpp_att)
         end
     else
@@ -63,17 +64,20 @@ function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:Da
         dec_embed=enc_embed
     end
 
+    project = Linear(;input=2config["H"], output=config["H"])
+    proto_embed = load_embed(1:(config["nproto"]+1), config, embeddings; winit=randn)
+
     Recombine{T}(enc_embed,
                  dec_embed,
+                 proto_embed,
                  LSTM(input=dinput, hidden=config["H"], dropout=config["pdrop"], numLayers=config["Nlayers"]),
                  Linear(input=config["H"]+config["nproto"]*config["attdim"], output=config["E"]),
+                 project,
                  enc_linear,
                  xp_encoder,
                  x_encoder,
                  x_xp_inter,
                  z_emb,
-                 zeroarray(arrtype,config["H"],config["Nlayers"]),
-                 zeroarray(arrtype,config["H"],config["Nlayers"]),
                  xp_att,
                  Pw{Float32}(2config["Z"], config["Kappa"]),
                  vocab,
@@ -234,7 +238,14 @@ function beam_decode(model::Recombine, x, protos, z; forviz=false)
     H,V,E       = model.config["H"], length(model.vocab.tokens), model.config["E"]
     masks       = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),model.config["nproto"])
     input       = ones(Int,B,1) .* specialIndicies.bow #x[:,1:1]
-    states      = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    #states      = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    if length(protos) == 1
+        states  = protos[1].finals
+    elseif length(protos) == 2
+        states  = ntuple(i->(protos[1].finals[i] .+ protos[2].finals[i])/2,2)
+    else
+        states  = (zeroarray(arrtype,H,B,model.config["Nlayers"]), zeroarray(arrtype,H,B,model.config["Nlayers"]))
+    end
     context     = ntuple(i->zeroarray(arrtype,model.config["E"],B), 1)
     limit       = model.config["maxLength"]
     traces      = [(zeros(1, B), states, ones(Int, B, limit), input, nothing, nothing, context)]
@@ -334,7 +345,14 @@ function decode(model::Recombine, x, protos, z; IDcontext=nothing, sampler=argma
     Kpos       = model.config["Kpos"]
     masks      = ntuple(i->arrtype(protos[i].mask'*T(-1e18)),model.config["nproto"])
     input      = ones(Int,B,1) .* specialIndicies.bow
-    states     = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    #states     = (_repeat(model.h0,B,dim=2), _repeat(model.c0,B,dim=2))
+    if length(protos) == 1
+        states  = protos[1].finals
+    elseif length(protos) == 2
+        states  = ntuple(i->(protos[1].finals[i] .+ protos[2].finals[i])/2,2)
+    else
+        states  = (zeroarray(arrtype,H,B,model.config["Nlayers"]), zeroarray(arrtype,H,B,model.config["Nlayers"]))
+    end
     context    = ntuple(i->zeroarray(arrtype,model.config["E"],B), 1)
     limit      = (training ? size(x,2)-1 : model.config["maxLength"])
     preds      = ones(Int, B, limit)
@@ -406,10 +424,23 @@ function decode_onestep(model::Recombine, states, protos, masks, z, input, prev_
     pdrop, attdrop, outdrop = model.config["pdrop"], model.config["attdrop"], model.config["outdrop"]
     e  = dropout(mat(model.decembed(input),dims=1), pdrop)
     if get(model.config,"feedcontext",false)
-        xi = vcat(e, z, prev_context[1])
+        if model.config["concatz"]
+            xi = vcat(e, z, prev_context[1]) # FIXME: add z to back!
+        else
+            xi = vcat(e, prev_context[1])
+        end
     else
-        xi = vcat(e, z)
+        if model.config["concatz"]
+            xi = vcat(e,z)
+        else
+            xi = e
+        end
     end
+    # if get(model.config,"feedcontext",false)
+    #     xi = vcat(e, z, prev_context[1])
+    # else
+    #     xi = vcat(e, z)
+    # end
     out = model.decoder(xi, states...; hy=true, cy=true)
     hbottom = vcat(out.y,xi)
     if model.config["nproto"] > 0
@@ -435,21 +466,40 @@ function encodeID(model::Recombine, I, Imask)
     end
 end
 
+function encode_with_padding(embed, tokens, mask)
+    embed(tokens) .* expand(arrtype(.!mask .* 1.0),dim=1) # (E X B X T)  .* (1 X B X T)
+end
+
 function encode(m::Recombine, x, protos; ID=nothing, prior=false)
     pdrop =  m.config["pdrop"]
     IDcontext = nothing
-    protos = map(p->(p...,context=m.xp_encoder(dropout(m.encembed(p.tokens), pdrop)).y), protos)
+    protos = map(protos) do p
+                emb = encode_with_padding(m.encembed, p.tokens, p.mask)
+                if !isnothing(p.proto_indicies)
+                    emb = emb .+ m.protoembed(p.proto_indicies) # is defined ?
+                end
+                emb = dropout(emb,pdrop)
+                out = m.xp_encoder(emb; hy=true, cy=true)
+                states = (out.hidden, out.memory)
+                finals = ntuple(i->states[i][:,:,1] .+ states[i][:,:,2],2)
+                context = m.project(out.y) # 2H -> H
+                (p...,context=context,finals=finals)
+            end
+    # protos = map(p->(p...,context=m.xp_encoder(dropout(m.encembed(p.tokens), pdrop)).y), protos)
     if !m.config["kill_edit"]
         if prior
             μ = zeroarray(arrtype,2latentsize(m),size(x.tokens,1))
         else
             if !config["use_insert_delete"]
-                x_context = m.x_encoder(m.encembed(x.tokens[:,2:end])).y
-                x_embed   = source_hidden(x_context,x.lens)
+                x_context = m.x_encoder(m.encembed(x.tokens[:,2:end]); hy=true).hidden
+                x_embed   = x_context[:,:,1] .+ x_context[:,:,2]
+                # x_context = m.x_encoder(m.encembed(x.tokens[:,2:end])).y
+                # x_embed   = source_hidden(x_context,x.lens)
                 if config["nproto"] > 0
-                    embeds    = map(p->source_hidden(p.context,p.lens),protos)
-                    inters    = map(e->m.x_xp_inter(e,x_embed;feature=true)[1],embeds)
-                    μ = m.z_emb(vcat(inters...))
+                    embeds    = map(p->p.finals[1],protos)
+                    #embeds    = map(p->source_hidden(p.context,p.lens),protos)
+                    #inters    = map(e->m.x_xp_inter(e,x_embed;feature=true)[1],embeds)
+                    μ = m.z_emb(vcat(x_embed,embeds...))
                 else
                     μ = m.z_emb(x_embed)
                 end
@@ -592,13 +642,25 @@ function getbatch(model::Recombine, iter, B; train=true)
     end
     x           = map(s->[bow;s;eow],limit_seq_length(x;maxL=maxL))
     xps         = ntuple(i->map(s->[s;eow],limit_seq_length(protos[i];maxL=maxL)), length(protos))
+    n_padded    = nothing
+    if config["nproto"] == 2 && !config["seperate"]
+        n_types = map(zip(xps[1],xps[2])) do (p1,p2)
+            [2ones(Int,length(p1));3ones(Int, length(p2))]
+        end
+
+        n_padded = PadSequenceArray(n_types, pad=1, makefalse=true).tokens
+
+        xps = (map(zip(xps[1],xps[2])) do (p1,p2)
+            [p1;p2]
+        end,)
+    end
     pxps        = map(p->PadSequenceArray(p, pad=mask, makefalse=true),xps)
     # xp          = map(s->[s;eow], limit_seq_length(xp;maxL=maxL))  # FIXME: CHANGED
     # xpp         = map(s->[s;eow], limit_seq_length(xpp;maxL=maxL)) # FIXME: CHANGED
     # pxp         = PadSequenceArray(xp, pad=mask, makefalse=true)
     # pxpp        = PadSequenceArray(xpp, pad=mask, makefalse=true)
     px          = PadSequenceArray(x, pad=mask, makefalse=false)
-    seq_protos  = ntuple(i->(pxps[i]...,lens=length.(xps[i])),length(protos))
+    seq_protos  = ntuple(i->(proto_indicies=n_padded,pxps[i]...,lens=length.(xps[i]) .- 1),length(protos))
     # seq_xpp     = (pxpp...,lens=length.(xpp))
     seq_x       = (px...,lens=length.(x) .- 1)
     Tps         = map(p->size(p.tokens,2), seq_protos)
