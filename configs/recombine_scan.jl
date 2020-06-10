@@ -7,16 +7,16 @@ config = Dict(
               "H"=>512,
               "Z"=>16,
               "E"=>64,
-              "B"=>32,
+              "B"=>64,
               "attdim"=>128,
               "Kpos" =>16,
               "concatz"=>true,
-              "optim"=>Adam(lr=0.002),
+              "optim"=>Adam(lr=0.001),
               "gradnorm"=>1.0,
               "kl_weight"=>0.0,
               "kl_rate"=> 0.05,
               "fb_rate"=>4,
-              "N"=>200,
+              "N"=>400,
               "useprior"=>true,
               "aepoch"=>1, #20
               "epoch"=>8 ,  #40
@@ -57,5 +57,10 @@ config = Dict(
               "seperate_emb"=>false,
               "feedcontext"=>true,
               "seed"=>1,
-              "self_attention"=>false
+              "self_attention"=>false,
+              "use_insert_delete"=>false,
+              "p(xp=x)" => 0.01,
+              "nproto" => 2,
+              "temp" => 0.2,
+              "beam" => true
               )

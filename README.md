@@ -1,10 +1,25 @@
-# Textmorph repo
+# Recombination Networks
 
-Repo for generating text according to editing and autocomplete style supervision.
+The code provides the models described in Learning Data Recombination and Mutation forCompositional Generalization paper.
 
-## Example
-Example runstring - 
-```bash
-export TEXTMORPH_DATA=/scr/nlp/squad_entailment_data
-python docker.py -g 0 'python textmorph/edit_model/main.py configs/edit_model/edit_test.txt'
+## Dependencies
+  - Linux or MACOS
+  - Julia 1.2 (if not don't worry, the setup script will ask for a local installation)
+  - CUDA and CUDNN Developer Toolkits
+  - Python 3
+  - Network connection
+
+
+## Setup
+
+```SHELL
+   sh setup.sh
 ```
+
+## Experiments
+
+To verify the results presented in the paper, you may run the scripts to train models and see the evaluations. During training logs will be created at [checkpoints/](checkpoints/) folder.
+
+All the experiments can be found at [exps/](exps/)
+
+**Note**: We only tested the experiments on a Nvidia Volta GPU, for some models GPU requirements might be high.
