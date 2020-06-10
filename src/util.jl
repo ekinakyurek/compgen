@@ -10,7 +10,7 @@ import Knet: sumabs2, norm, At_mul_B
 const gpugc   = KnetLayers.gc
 const arrtype = gpu()>=0 ? KnetArray{Float32} : Array{Float32}
 @eval Knet @primitive bmm(x1,x2; transA::Bool=false, transB::Bool=false),dy,y (transA ? bmm(x2, dy; transA=transB , transB=true) :  bmm(dy, x2;  transA=false, transB=!transB) )    (transB ? Knet.bmm(dy,x1; transA=true , transB=transA) :  bmm(x1, dy;  transA=!transA , transB=false))
-using Printf, Dates, JSON, Distributions
+using Printf, Dates, JSON, Distributions, ArgParse
 ###
 #### UTILS
 ###
@@ -326,6 +326,7 @@ function initializeWordEmbeddings(dim; wordsDict = nothing, prefix = "data/Glove
     return embeddings
 end
 
+
 function linear_init(in_dim)
     st = Float32(1 / sqrt(in_dim))
     return function (s...)
@@ -511,3 +512,28 @@ function printConfig(f::IO,o::Dict)
     for (k,v) in o; v!== nothing && println(f, k, " => " , v); end
     flush(f)
 end
+
+
+function create_copy_mask(xp, xp_mask, xmasked)
+    mask = trues(size(xmasked,2)-1, size(xp_mask,2), length(xp)) # T x T' x B
+    for i=1:size(xmasked,1)
+        for t=2:size(xmasked,2)
+            token =  xmasked[i,t]
+            if token ∉ specialIndicies
+                inds  = findall(t->t==token,xp[i])
+                mask[t,inds,i] .= false
+            end
+        end
+    end
+    return mask
+end
+
+
+numlayers(model)   = model.config["Nlayers"]
+hiddensize(model)  = model.config["H"]
+latentsize(model)  = model.config["Z"]
+embedsize(model)   = model.config["E"]
+decinputsize(model)= model.decoder.specs.inputSize
+isconcatz(model)   = model.config["concatz"]
+elementtype(model) = Float32
+isencatt(model)    = haskey(model, :Wμa) &&  haskey(model, :Wσa)

@@ -1,6 +1,7 @@
-using LibGit2, Random, KnetLayers, StringDistances
+using LibGit2, Random, Knet, KnetLayers, StringDistances
 import KnetLayers: IndexedDict, _pack_sequence
-
+import Knet: _ser, JLDMODE, save
+dir(path...) = joinpath(pwd(),path...)
 const specialTokens   = (unk="<unk>", mask="<pad>", eow="</s>", bow="<s>", sep="→", iosep="#", copy="<copy>")
 const specialIndicies = (unk=1, mask=2, eow=3, bow=4, sep=5, iosep=6, copy=7)
 
@@ -22,26 +23,29 @@ Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\
 Parser{YelpDataSet}(version=:default) = Parser{YelpDataSet}(nothing,'\t',nothing,
                                                             Set(readlines(defaultpath(YelpDataSet)*"/free.txt")))
 
-defaultpath(dataset::Type{SIGDataSet}) = dir("data","Sigmorphon")
-defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCAN")
+defaultpath(dataset::Type{SIGDataSet}) = dir("data","SIGDataSet")
+defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCANDataSet")
 defaultpath(dataset::Type{YelpDataSet}) = dir("data","Yelp")
 
 function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet))
+    @show path
     !isdir(path) && LibGit2.clone("https://github.com/sigmorphon/conll2018", path)
-    unipath = "data/unimorph"
-    if !isdir(unipath)
-        mkdir(unipath)
-        server = "https://github.com/unimorph/"
-        for lang in ("eng", "spa", "tur")
-            langpath = joinpath(unipath,lang)
-            !isdir(langpath) && LibGit2.clone(server*lang, joinpath(langpath))
-        end
-    end
+    # unipath = "data/unimorph"
+    # if !isdir(unipath)
+    #     mkdir(unipath)
+    #     server = "https://github.com/unimorph/"
+    #     for lang in ("eng", "spa", "tur")
+    #         langpath = joinpath(unipath,lang)
+    #         !isdir(langpath) && LibGit2.clone(server*lang, joinpath(langpath))
+    #     end
+    # end
     return true
 end
 
-download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet)) =
+function download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet))
+    @show path
     !isdir(path) ? LibGit2.clone("https://github.com/brendenlake/SCAN", path) : true
+end
 
 function download(dataset::Type{YelpDataSet}; path=defaultpath(YelpDataSet))
     if !isdir(data/Glove)
@@ -83,8 +87,8 @@ function rawfiles(dataset::Type{SIGDataSet}, config)
     lang = config["lang"]
     th   = lang[1:3]
     split = config["split"]
-    ["data/Sigmorphon/task1/all/$(lang)-train-$(split)",
-     "data/Sigmorphon/task1/all/$(lang)-test"
+    ["data/SIGDataSet/task1/all/$(lang)-train-$(split)",
+     "data/SIGDataSet/task1/all/$(lang)-test"
     ]
 end
 
@@ -92,11 +96,11 @@ function rawfiles(dataset::Type{SCANDataSet}, config)
     split, modifier  = config["split"], config["splitmodifier"]
     stsplit = replace(split, "_"=>"")
     if split in ("length","simple")
-        ["data/SCAN/$(split)_split/tasks_train_$(stsplit).txt",
-         "data/SCAN/$(split)_split/tasks_test_$(stsplit).txt"]
+        ["data/SCANDataSet/$(split)_split/tasks_train_$(stsplit).txt",
+         "data/SCANDataSet/$(split)_split/tasks_test_$(stsplit).txt"]
     else
-        ["data/SCAN/$(split)_split/tasks_train_$(stsplit)_$(modifier).txt",
-         "data/SCAN/$(split)_split/tasks_test_$(stsplit)_$(modifier).txt"]
+        ["data/SCANDataSet/$(split)_split/tasks_train_$(stsplit)_$(modifier).txt",
+         "data/SCANDataSet/$(split)_split/tasks_test_$(stsplit)_$(modifier).txt"]
     end
 end
 
@@ -253,4 +257,122 @@ function _ser(x::Vocabulary{T},s::IdDict,::typeof(JLDMODE)) where T
         end
     end
     return s[x]
+end
+
+
+
+function preprocess_json_format(neighboorhoods, splits, esets, edata; subtask="reinflection")
+    processed = []
+    for (set,inds) in zip(esets,splits)
+        proc_set = []
+        for (d,i) in zip(set,inds)
+            !haskey(neighboorhoods,string(i-1)) && continue
+            x  = xfield(SIGDataSet,d,true; subtask=subtask)
+            for ns in neighboorhoods[string(i-1)]
+                xp  = xfield(SIGDataSet,edata[ns[1]+1],true; subtask=subtask)
+                xpp = xfield(SIGDataSet,edata[ns[2]+1],true; subtask=subtask)
+                push!(proc_set, (x=x, xp=xp, xpp=xpp, ID=inserts_deletes(x,xp)))
+                #push!(proc_set, (x=x, xp=xpp, xpp=xp, ID=inserts_deletes(x,xpp)))
+            end
+        end
+        push!(processed, proc_set)
+    end
+    return processed
+end
+
+
+"""
+    TRtoLower(x::Char)
+    TRtoLower(s::AbstractString)
+    lowercase function for Turkish locale
+"""
+TRtoLower(x::Char) = x=='I' ? 'ı' : lowercase(x);
+TRtoLower(s::AbstractString) = map(TRtoLower,s)
+function special_lowercase(chars, lcase)
+    newchars = similar(chars)
+    start = true
+    for (i,c) in enumerate(chars)
+        if start
+            newchars[i] = lcase(c)
+        else
+            newchars[i] = c
+        end
+        if c == " "
+            newchars[1:i] = map(lcase,newchars[1:i])
+            start = true
+        else
+            start = false
+        end
+    end
+    return newchars
+end
+
+
+
+function read_from_jsons(path, config; level="hard")
+    lang = config["lang"]
+    path = path * lang* "/"
+    lcase = lang == "turkish" ? TRtoLower : lowercase
+    subtask = config["subtask"]
+    println("reading from $path ,and subtask $(subtask)")
+    hints, seed = config["hints"], config["seed"]
+    fix = "hints-$hints.$seed"
+    data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"seqs.$fix.json"))
+    splits = JSON.parsefile(path*"splits.$fix.json")
+    neighbourhoods = JSON.parsefile(path*"neighborhoods.$fix.json")
+    vocab = JSON.parsefile(path*"vocab.json")
+    vocab = convert(Dict{String,Int},vocab)
+    for (k,v) in vocab; vocab[k] = v+1; end
+    vocab = IndexedDict(vocab)
+    strdata = [split_array(vocab[d][3:end-1],"<sep>") for d in data]
+    strdata = map(strdata) do  d
+            lemma, tags = split_array(special_lowercase(d[1],lcase),isuppercaseornumeric; include=true)
+            (surface=special_lowercase(d[2],lcase), lemma=lemma, tags=tags)
+    end
+    if isfile(path*"generated.$fix.json")
+        augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
+        aug = map(augmented_data) do  d
+            x = vocab[d[3:end-1]]
+            if length(findall(t->t=="<sep>", x)) == 1
+                input, output = split_array(x,"<sep>")
+                input, output  = special_lowercase(input,lcase), special_lowercase(output,lcase)
+                if any(map(isuppercaseornumeric, x))
+                    lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
+                    (surface=output, lemma=lemma, tags=tags)
+                    (input=output, output=input)
+                else
+                    nothing
+                end
+            else
+                nothing
+            end
+        end
+        aug  = filter!(!isnothing, aug)
+    else
+        aug  = []
+    end
+    println(length(aug))
+    vocab  = Vocabulary(strdata, Parser{SIGDataSet}())
+    edata  = encode(strdata,vocab)
+    splits = map(s->Int.(splits[s]) .+ 1,("train","test_hard","test_easy","val_easy","val_hard"))
+    esets  = [edata[s] for s in splits]
+    #eaug   = encode(aug,vocab)
+    processed = preprocess_json_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
+    model     = config["model"](vocab, config; embeddings=nothing)
+    #processed  = preprocess(model, esets...)
+    #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
+    return processed, esets, model, aug
+end
+
+function create_ppl_examples(eset, numex=200)
+    test_sentences = unique(map(x->x.x,eset))
+    test_sentences = test_sentences[1:min(length(test_sentences),numex)]
+    example_inds   = [findall(e->e.x==t,eset) for t in test_sentences]
+    data = []; inds = []; crnt = 1
+    for ind in example_inds
+        append!(data, eset[ind])
+        push!(inds, crnt:crnt+length(ind)-1)
+        crnt = crnt+length(ind)
+    end
+    return data,inds
 end

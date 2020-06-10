@@ -24,7 +24,8 @@ function PositionalAttention(;memory::Int, query::Int, att::Int,
                             normalize=false)
     transforms = map(zip((keyT, queryT, valT),(memory, query, memory))) do (trans,input)
                     if trans
-                        Dense(;input=input, output=att, activation=act, winit=att_winit) # winit=linear_init(input), binit=linear_init(input),
+                        myinit = linear_init(input)
+                        Dense(;input=input, output=att, activation=act, winit=myinit, binit=myinit) # winit=linear_init(input), binit=linear_init(input),
                     else
                         NonAct()
                     end

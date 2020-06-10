@@ -1,45 +1,12 @@
-struct SimpleAttention
-    key_transform::Linear
-    attdim::Int
-end
-function SimpleAttention(;memory::Int, query::Int, att::Int)
-    SimpleAttention(Linear(input=memory,output=att, winit=att_weight_init),
-                        att)
-end
-
-function (m::SimpleAttention)(memory, query; pdrop=0, mask=nothing)
-    tquery  = query # [A,B,T] or [A,B]
-    memory  = batch_last(memory)
-    tkey    = m.key_transform(memory)
-    pscores = nothing
-    if ndims(query) == 2
-        tquery = expand(tquery, dim=2)
-    else
-        tquery = batch_last(tquery)
-    end
-    scores = batch_last(bmm(tkey, tquery,transA=true)) #[T',B,T]
-    scores = dropout(scores, pdrop)
-    if !isnothing(mask)
-        scores = applymask2(scores, expand(mask, dim=3), +) # size(mask) == [T', B , 1]
-    end
-    #memory H,B,T' # weights T' X B X T
-    weights  = softmax(scores;dims=1) #[T',B,T]
-    values   = batch_last(bmm(memory,batch_last(weights))) # [H,T,B]
-    if  ndims(query) == 2
-        mat(values, dims=1), mat(scores,dims=1), mat(weights, dims=1)
-    else
-        values, scores, weights
-    end
-end
-
 struct Seq2Seq{Data}
-    embed::Embed
+    encembed::Embed
+    decembed::Embed
     decoder::LSTM
     encoder::LSTM
     hidden_proj::Linear
     combine::Linear
     output::Linear
-    attention::SimpleAttention
+    attentions
     copygate::Union{Dense,Nothing}
     vocab::Vocabulary{Data}
     config::Dict
@@ -48,28 +15,43 @@ end
 
 function Seq2Seq(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     V = length(vocab)
-    copygate = config["copy"] ? Dense(input=V, output=1, activation=Sigm()) : nothing
-    Seq2Seq{T}(load_embed(vocab, config, embeddings),
-                 LSTM(input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"]),
-                 LSTM(input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"]),
-                 Linear(input=2config["H"], output=config["H"]),
-                 Linear(input=2config["H"], output=config["H"]),
-                 Linear(input=config["H"], output=V),
-                 SimpleAttention(memory=config["H"], query=config["H"], att=config["H"]),
-                 copygate,
-                 vocab,
-                 config)
+    myinit = linear_init(config["H"])
+    attentions = (PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()),)
+    if config["self_attention"]
+        attentions=(attentions[1],
+                    PositionalAttention(memory=config["H"], query=config["H"], att=config["H"], valT=false, queryT=false, act=NonAct()))
+    end
+    if config["copy"]
+        copygate = Dense(input=config["H"], output=length(attentions), activation=NonAct(), winit=myinit, binit=myinit)
+    else
+        copygate = nothing
+    end
+
+    lstminit = (winit=myinit, binit=myinit, finit=myinit)
+
+    Seq2Seq{T}(load_embed(vocab, config, embeddings; winit=randn),
+               load_embed(vocab, config, embeddings; winit=randn),
+               LSTM(;input=config["E"]+config["H"], hidden=config["H"], numLayers=config["Nlayers"], lstminit...),
+               LSTM(;input=config["E"], hidden=config["H"], bidirectional=true, numLayers=config["Nlayers"], lstminit...),
+               Linear(;input=2config["H"],output=config["H"], winit=linear_init(2config["H"]), binit=linear_init(2config["H"])),
+               Linear(;input=(1+length(attentions))*config["H"],output=config["H"],winit=linear_init((1+length(attentions))*config["H"]), binit=linear_init((1+length(attentions))*config["H"])),
+               Linear(;input=config["H"], output=V, winit=myinit, binit=myinit),
+               attentions,
+               copygate,
+               vocab,
+               config)
 end
 
-function encode(model::Seq2Seq, packed)
-    tokens = reshape(packed.tokens,length(packed.tokens),1)
-    emb    = dropout(model.embed(tokens),model.config["pdrop"])
-    out    = model.encoder(mat(emb,dims=1); batchSizes=packed.batchSizes, hy=true, cy=true)
+function encode(model::Seq2Seq, source_enc)
+    #tokens = reshape(packed.tokens,length(packed.tokens),1)
+    emb    = dropout(model.encembed(source_enc.tokens),model.config["pdrop"])
+    emb    = emb .* expand(arrtype(.!source_enc.mask .* 1.0),dim=1)
+    out    = model.encoder(emb; hy=true, cy=true)
     states = (out.hidden, out.memory)
     finals = ntuple(i->states[i][:,:,1] .+ states[i][:,:,2],2)
     #finals = source_hidden(x_context,x.lens)
-    inds   = _batchSizes2indices(packed.batchSizes)
-    x_context = PadRNNOutput2(model.hidden_proj(out.y), inds)
+    #inds   = _batchSizes2indices(packed.batchSizes)
+    x_context = model.hidden_proj(out.y)
     finals, x_context
 end
 
@@ -84,56 +66,74 @@ function copy_projection(vocab, tokens)
 end
 
 const EPS = 1e-7
-function decode_onestep(model::Seq2Seq, states, source, prev_context, input, copy_proj)
-    pdrop, attdrop, outdrop = model.config["pdrop"], model.config["attdrop"], model.config["outdrop"]
-    e  = mat(model.embed(input),dims=1)
-    xi = dropout(vcat(e, prev_context[1]),pdrop)
-    out = model.decoder(xi, states...; hy=true, cy=true)
-    hbottom = out.y #vcat(out.y,e)
-    s_attn, s_score, s_weight = model.attention(source.hiddens, hbottom; mask=source.mask) #positions[1]
-    comb_features = dropout(model.combine(vcat(hbottom,s_attn)), pdrop)
-    yfinal = model.output(comb_features)
-    if model.config["copy"]
-            pred_probs = logp(yfinal, dims=1)
-            dist       = s_weight
-            copy_probs = bmm(copy_proj, expand(dist,dim=2)) .+ EPS # V X T X B TIMES T X 1 X B
-            copy_probs = log.(reshape(copy_probs,size(yfinal)))
-            copy_weights = model.copygate(yfinal)
-            comb_probs = cat((log.(copy_weights .+ EPS) .+ copy_probs),(log.((1+EPS) .- copy_weights) .+ pred_probs),dims=3)
-            comb_probs = logsumexp(comb_probs, dims=3)
-            pred_logits= comb_probs
-    else
-            pred_logits = logp(yfinal, dims=1)
-            copy_weights = nothing
+function decode_onestep(model::Seq2Seq, states, source, feed, input, hiddens, copy_proj=nothing, self_proj=nothing, self_mask=nothing)
+    emb    = model.decembed(input)
+    xi     = dropout(vcat(emb, feed), model.config["pdrop"])
+    out    = model.decoder(xi, states...; hy=true, cy=true)
+    hidden = out.y
+    source_attn, _, source_weight = model.attentions[1](source.hiddens, hidden; mask=source.mask) #positions[1]
+    attns, weights, projs = (source_attn,), (source_weight,), (copy_proj,)
+    if model.config["self_attention"]
+        H,B = size(hidden)
+        push!(hiddens, hidden)
+        hidden3d = reshape(cat1d(hiddens...),H,B,:)
+        self_attn, _, self_weight = model.attentions[2](hidden3d, hidden; mask=self_mask)
+        attns, weights, projs = (attns[1],self_attn),(weights[1],self_weight),(projs[1], self_proj)
     end
-    pred_logits, (comb_features,), (s_score,), (out.hidden, out.memory), (copy_weights,)
+    comb_features = dropout(model.combine(vcat(hidden,attns...)), model.config["pdrop"])
+    ypred = model.output(comb_features)
+    copy = specialIndicies.copy
+    if model.config["copy"]
+        pred_probs = softmax(ypred, dims=1)
+        dists  = weights
+        seq_probs  = softmax(model.copygate(hidden),dims=1)
+        copy_weights = pred_probs[copy:copy,:] # 1 x B
+        weighted_dists = [dists[i] .* seq_probs[i:i, :]  for i=1:length(dists)]
+        copy_probs = sum([bmm(projs[i], expand(weighted_dists[i],dim=2)) for i=1:length(dists)]) .+ EPS # V X T X B TIMES T X 1 X B
+        comb_probs = log.(reshape(copy_probs,size(pred_probs)) .* copy_weights  .+  pred_probs)
+        pred_logits = comb_probs
+    else
+        pred_logits  = logp(ypred, dims=1)
+        copy_weights = exp.(pred_logits[copy:copy,:])
+    end
+    pred_logits, comb_features, (out.hidden, out.memory), (copy_weights,)
 end
 
-function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, copy_proj, target=nothing; sampler=argmax, training=true)
+function decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, target=nothing; sampler=argmax, training=true)
     T,B        = eltype(arrtype), size(source_enc.mask,1)
     H,V,E      = model.config["H"], length(model.vocab.tokens), model.config["E"]
     source     = (hiddens=source_hiddens, mask=arrtype(source_enc.mask'*T(-1e18)))
     input      = ones(Int,B,1) .* specialIndicies.bow
+    dumy       = ones(Int,B,1) .* specialIndicies.mask
     states     = source_finals #map(f->_repeat(f,model.config["Nlayers"],dim=3), source_finals)
-    limit      = (training ? size(target,2)-1 : model.config["maxLength"])
-    preds      = ones(Int, B, limit)
+    limit      = training ? size(target,2)-1 : model.config["maxLength"]
+    preds      = training ? copy(target) : ones(Int, B, limit+1) .* specialIndicies.bow
     outputs    = []
-    attns      = (zeroarray(arrtype,model.config["H"],B),)
+    hiddens    = Any[]
+    feed       = zeroarray(arrtype,H,B)
+    copy_proj  = arrtype(copy_projection(model.vocab, source_enc.tokens))
     for i=1:limit
-         output, attns, scores, states, c_weights = decode_onestep(model, states, source, attns, input, copy_proj)
+        if model.config["self_attention"]
+            self_proj = arrtype(copy_projection(model.vocab, preds[:,1:i]))
+            self_mask = (preds[:,1:i] .== specialIndicies.mask)
+            self_mask[:,1] .= true
+            self_mask = arrtype(T(-1e18)*self_mask')
+        else
+            self_proj, self_mask = nothing, nothing
+        end
+         output,feed,states,_= decode_onestep(model,states,source,feed,preds[:,i],hiddens,copy_proj,self_proj,self_mask)
          if !training
-             i == 1 ? negativemask!(output,1:6) : negativemask!(output,1:2,4)
+             i == 1 ? negativemask!(output,1:7) : negativemask!(output,1:2,4,7)
+         # else
+         #     negativemask!(output,7)
          end
          push!(outputs,output)
          if !training
-             output        = convert(Array, exp.(output))
-             preds[:,i]    = vec(mapslices(sampler, output, dims=1))
-             input         = preds[:,i:i]
-         else
-             input         = target[:,i+1:i+1]
+             #output = softmax(output,dims=1) |> cpucopy
+             preds[:,i+1] = vec(mapslices(argmax, (output |> cpucopy), dims=1))
          end
     end
-    return reshape(cat1d(outputs...),V,B,limit), preds
+    return reshape(cat1d(outputs...),V,B,limit), preds[:,2:end]
 end
 
 function beam_decode(model::Seq2Seq, source_enc, source_finals, source_hiddens, copy_proj; forviz=false)
@@ -235,19 +235,18 @@ function loss(model::Seq2Seq, data; eval=false, returnlist=false)
     yinds = (target.tokens[:, 2:end] .* target.mask[:, 2:end])
     ntokens = sum(target.mask[:, 2:end])
     if ntokens == 0; println("warning: empty batch"); end
-    copy_proj = arrtype(copy_projection(model.vocab, source_enc.tokens))
-    finals, hiddens = encode(model, packed)
+    finals, hiddens = encode(model, source_enc)
     B = size(source_enc.mask,1)
-    output, _ = decode(model, source_enc, finals, hiddens, copy_proj, target.tokens)
+    output, _ = decode(model, source_enc, finals, hiddens, target.tokens)
     if eval
-        _, preds = decode(model, source_enc, finals, hiddens, copy_proj; training=false)
-        preds = [trimencoded(preds[i,:], eos=true) for i=1:B]
+        _, preds = decode(model, source_enc, finals, hiddens; training=false)
+        preds = [preds[i,:] for i=1:B]
         # preds,_ = beam_decode(model, source_enc, finals, hiddens)
         # preds = [trimencoded(preds[1][i,:]) for i=1:B]
     end
     if !returnlist
-        inds = KnetLayers.findindices(output,yinds)
-        loss = -sum(output[inds]) / ntokens
+        #inds = KnetLayers.findindices(output,yinds)
+        loss = nllmask(output, yinds; average=true)
     else
         logpy = output
         loss = []
@@ -271,15 +270,16 @@ end
 function getbatch(model::Seq2Seq, iter, B)
     edata = collect(Iterators.take(iter,B))
     b = length(edata); b==0 && return nothing
-    unk, mask, eow, bow,_,_ = specialIndicies
+    unk, mask, eow, bow ,_ = specialIndicies
     inputs, outputs = unzip(edata)
     inputs  = limit_seq_length(inputs; maxL=model.config["maxLength"])
-    r   = sortperm(inputs, by=length, rev=true)
-    inputs = inputs[r]
-    outputs = outputs[r]
-    input_packed = _pack_sequence(inputs)
+    # r = sortperm(inputs, by=length, rev=true)
+    # inputs = inputs[r]
+    # outputs = outputs[r]
+    inputs  = limit_seq_length_eos_bos(inputs; maxL=model.config["maxLength"])
     outputs = limit_seq_length_eos_bos(outputs; maxL=model.config["maxLength"])
-    input_enc = PadSequenceArray(inputs, pad=mask, makefalse=true)
+    input_packed = inputs #_pack_sequence(inputs)
+    input_enc  = PadSequenceArray(inputs, pad=mask, makefalse=true)
     output_enc = PadSequenceArray(outputs, pad=mask, makefalse=false)
     return (source=(input_enc..., lens=length.(inputs)), target=output_enc, packed=input_packed, unbatched=(inputs, outputs))
 end
@@ -341,7 +341,7 @@ function attension_visualize(vocab, probs, scores, xp, x; prefix="")
     Plots.savefig(p, prefix*"_attention_map.pdf")
 end
 
-function sample(model::Seq2Seq, data; N=nothing, sampler=argmax,beam=true, forviz=false)
+function sample(model::Seq2Seq, data; N=nothing, sampler=argmax, beam=true, forviz=false)
     N  = isnothing(N) ? model.config["N"] : N
     B  = min(model.config["B"],32)
     dt = data
@@ -352,7 +352,7 @@ function sample(model::Seq2Seq, data; N=nothing, sampler=argmax,beam=true, forvi
         if (d = getbatch(model,dt,b)) !== nothing
             source_enc, target, packed, unbatched = d
             copy_proj = arrtype(copy_projection(model.vocab, source_enc.tokens))
-            finals, hiddens = encode(model, packed)
+            finals, hiddens = encode(model, source_enc)
             B = size(source_enc.mask,1)
             if beam
                 preds, probs, scores, outputs, w_arr  = beam_decode(model, source_enc, finals, hiddens, copy_proj; forviz=forviz)
@@ -377,7 +377,7 @@ function sample(model::Seq2Seq, data; N=nothing, sampler=argmax,beam=true, forvi
                 #s       = mapslices(s->join(s,'\n'),s,dims=2)
 
             else
-                y, preds   = decode(model, source_enc, finals, hiddens, copy_proj; sampler=sampler, training=false)
+                y, preds   = decode(model, source_enc, finals, hiddens; sampler=sampler, training=false)
                 predstr    = mapslices(x->trim(x,vocab), preds, dims=2)
                 probs2D    = ones(b,1)
                 predenc    = [trimencoded(preds[i,:]) for i=1:b]
@@ -395,14 +395,28 @@ function sample(model::Seq2Seq, data; N=nothing, sampler=argmax,beam=true, forvi
 end
 
 
-function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, returnlist=false)
+function eval_seq(vocab::Vocabulary{SIGDataSet}, seq)
+    charseq = vocab.tokens[trimencoded(seq)]
+    if any(map(isuppercaseornumeric, charseq))
+        lemma, tags = split_array(charseq, isuppercaseornumeric; include=true)
+        [join(lemma,""); tags]
+    else
+        charseq
+    end
+end
+
+function eval_seq(vocab::Vocabulary{SCANDataSet}, seq)
+     vocab.tokens[trimencoded(seq)]
+end
+
+function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, returnlist=false, printeval=false)
     ppl = typemax(Float64)
     acc = 0.0
     if !eval
+        dt = Iterators.Stateful(data)
         bestparams = model.config["bestval"] ? deepcopy(parameters(model)) : nothing
         setoptim!(model,model.config["optim"])
         model.config["rpatiance"] = model.config["patiance"]
-        dt = Iterators.Stateful(data)
         n_epoch_batches = model.config["n_epoch_batches"]
         n_epochs = model.config["n_epoch"]
     else
@@ -419,7 +433,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
         #dt  = Iterators.Stateful((eval ? data : data)) #FIXME: SHUFFLE!
         msg(p) = string(@sprintf("Iter: %d,Lss(ptok): %.2f,Lss(pinst): %.2f", total_iter, lss/ntokens, lss/ninstances))
         #for i in progress(msg,1:n_epoch_batches)
-        for i=1:n_epoch_batches
+        for j in 1:n_epoch_batches
             d = getbatch(model,dt,model.config["B"])
             isnothing(d) && break
             b  = size(d[1].mask,1)
@@ -452,11 +466,19 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                     J, preds = loss(model, d; eval=true, returnlist=false)
                     lss += (J*n)
                 end
-                toutputs = map(x->x[2:end],d.unbatched[2])
-                correct += sum(preds .== toutputs)
+                tinputs, toutputs = d.unbatched
                 for i=1:b
-                    pred_here, ref = preds[i], toutputs[i]
-                    #println(join(model.vocab.tokens[pred_here],' '), join(model.vocab.tokens[ref],' '))
+                    pred_here = eval_seq(model.vocab,preds[i])
+                    ref       = eval_seq(model.vocab,toutputs[i][2:end])
+                    inp       = tinputs[i]
+                    label     = pred_here == ref
+                    correct  += label
+                    if printeval
+                        println("\nINPUT: ", join(model.vocab.tokens[inp],' ')," $label")
+                        println("REF: ",  join(ref,' '))
+                        println("PRED: ", join(pred_here,' '),"\n")
+                    end
+
                     tp += length([p for p in pred_here if p ∈ ref])
                     fp += length([p for p in pred_here if p ∉ ref])
                     fn += length([p for p in ref if p ∉ pred_here])
@@ -466,11 +488,16 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
             #     print_ex_samples(model, data)
             # end
         end
+
         if !isnothing(dev)
+            if model.config["gamma"] > 0 && i == n_epochs ÷ 2
+                 println("lrdecay")
+                 lrdecay!(model, model.config["gamma"])
+            end
             cur_ppl,_,_,cur_acc,cur_f1 = calc_ppl(model, dev)
             @show cur_f1, f1, cur_acc, acc
             if cur_acc > 0.4
-                calc_ppl(model, cond_processed[2])
+                calc_ppl(model, dev)
             end
             if cur_acc - acc > 1e-4
                 if !isnothing(bestparams)
@@ -483,12 +510,14 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
                 f1  = cur_f1
                 model.config["rpatiance"]  = model.config["patiance"]
             else
-                model.config["rpatiance"] = model.config["rpatiance"] - 1
-                if model.config["rpatiance"] == 0
-                     lrdecay!(model, model.config["lrdecay"])
-                     model.config["rpatiance"] = model.config["patiance"]
-                else
-                    println("patiance decay, rpatiance: $(model.config["rpatiance"])")
+                if model.config["patiance"] > 0
+                    model.config["rpatiance"] = model.config["rpatiance"] - 1
+                    if model.config["rpatiance"] == 0
+                         lrdecay!(model, model.config["lrdecay"])
+                         model.config["rpatiance"] = model.config["patiance"]
+                    else
+                        println("patiance decay, rpatiance: $(model.config["rpatiance"])")
+                    end
                 end
             end
         elseif !eval
@@ -524,7 +553,7 @@ function train!(model::Seq2Seq, data; eval=false, dev=nothing, dev2=nothing, ret
     return (ppl=ppl, ptokloss=ptokloss, pinstloss=pinstloss, acc=acc, f1=f1)
 end
 
-calc_ppl(model::Seq2Seq, dev) = train!(model, dev; eval=true)
+calc_ppl(model::Seq2Seq, dev; printeval=false) = train!(model, dev; eval=true, printeval=printeval)
 
 
 import Base: length, size, iterate, eltype, IteratorSize, IteratorEltype, haslength,SizeUnknown, @propagate_inbounds
@@ -581,74 +610,3 @@ function preprocess(model::Seq2Seq, train, devs...)
         end
     end
 end
-
-
-
-scan_cond_config = Dict(
-              "H"=>512,
-              "E"=>64,
-              "B"=>64,
-              "attdim"=>512,
-              "optim"=>Adam(lr=0.001),
-              "gradnorm"=>1.0,
-              "N"=>100,
-              "epoch"=>150,
-              "pdrop"=>0.5,
-              "Nlayers"=>1,
-              "activation"=>ELU,
-              "maxLength"=>45,
-              "task"=>SCANDataSet,
-              "patiance"=>10,
-              "lrdecay"=>0.5,
-              "split" => "add_prim",
-              "splitmodifier" => "jump",
-              "beam_width" => 4,
-              "copy" => false,
-              "outdrop" => 0.0,
-              "attdrop" => 0.0,
-              "outdrop_test" => false,
-              "positional" => false,
-              "condmodel"=>Seq2Seq,
-              "subtask"=>nothing,
-              "paug"=>0.05,
-              "model"=>Recombine,
-              "conditional"=>true,
-              "n_epoch_batches"=>32,
-              "n_epoch"=>150,
-              "bestval"=>false
-              )
-
-
-sig_cond_config = Dict(
-            "H"=>512,
-            "E"=>64,
-            "B"=>16,
-            "attdim"=>512,
-            "optim"=>Adam(lr=0.002),
-            "gradnorm"=>1.0,
-            "lang"=>"spanish",
-            "N"=>100,
-            "epoch"=>150,
-            "pdrop"=>0.5,
-            "Nlayers"=>1,
-            "activation"=>ELU,
-            "maxLength"=>45,
-            "task"=>SIGDataSet,
-            "patiance"=>10,
-            "lrdecay"=>0.9,
-            "beam_width" => 4,
-            "copy" => false,
-            "outdrop" => 0.0,
-            "attdrop" => 0.0,
-            "outdrop_test" => false,
-            "positional" => false,
-            "condmodel"=>Seq2Seq,
-            "subtask"=>"analyses",
-            "split"=>"jacob",
-            "paug"=>0.1,
-            "model"=>Recombine,
-            "conditional"=>true,
-            "n_epoch_batches"=>65,
-            "n_epoch"=>80,
-            "bestval"=>true
-            )
