@@ -5,7 +5,7 @@ export RECOMB_TASK=MORPH
 LANG=haida
 for hints in 4 8 16; do
 	for seed in 0 1 2 3 4; do
-		julia runexperiments.jl --seed $seed \
+		julia --project runexperiments.jl --seed $seed \
 		--hints $hints \
 		--config configs/recombine_sig.jl \
 		--condconfig configs/seq2seq_sig.jl \

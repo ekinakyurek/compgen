@@ -7,7 +7,7 @@ LANG=turkish
 for nproto in 0; do
 	for hints in 4 8 16; do
 		for seed in 0 1 2 3 4; do
-			julia runexperiments.jl --seed $seed \
+			julia --project runexperiments.jl --seed $seed \
 			--hints $hints \
 			--config configs/recombine_sig.jl \
 			--copy \
@@ -24,7 +24,7 @@ for nproto in 0; do
 			> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.log \
 			2> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.err
 
-			julia runexperiments.jl --seed $seed \
+			julia --project runexperiments.jl --seed $seed \
 			--hints $hints \
 			--config configs/recombine_sig.jl \
 			--condconfig configs/seq2seq_sig.jl \

@@ -1,11 +1,11 @@
 #!/bin/sh
 cd ../
-# export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=3
 export RECOMB_TASK=SCAN
 VAE=true
 for nproto in 2; do
 	for seed in 0 1 2 3 4; do
-		julia runexperiments_scan.jl --seed $seed \
+		julia --project runexperiments_scan.jl --seed $seed \
 		--config configs/recombine_scan.jl \
 		--copy \
 		--nproto 2 \
@@ -19,7 +19,7 @@ for nproto in 2; do
 		> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.log \
 		2> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.err
 
-		julia runexperiments_scan.jl --seed $seed \
+		julia --project runexperiments_scan.jl --seed $seed \
 		--config configs/recombine_scan.jl \
 		--condconfig configs/seq2seq_scan.jl \
 		--usegenerated \
