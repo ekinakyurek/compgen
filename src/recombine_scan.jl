@@ -827,10 +827,10 @@ function viz(model, data; N=5)
     #end
     for i=1:length(samples)
         x, scores, probs, protos = samples[i]
-        attension_visualize(model.vocab, probs, scores, protos, x; prefix="$i")
+        attension_visualize_scan(model.vocab, probs, scores, protos, x; prefix="$i")
         println("samples: ", join(model.vocab.tokens[x],' '))
-        println("xp: ", join(model.vocab.tokens[xp],' '))
-        println("xpp: ", join(model.vocab.tokens[xpp],' '))
+        println("xp: ", join(model.vocab.tokens[protos[1]],' '))
+        println("xpp: ", join(model.vocab.tokens[protos[2]],' '))
         println("----------------------")
     end
 end
@@ -840,7 +840,7 @@ function removeunicodes(toElement)
     return vocab
 end
 
-function attension_visualize(vocab, probs, scores, xp, xpp, x; prefix="")
+function attension_visualize_scan(vocab, probs, scores, protos, x; prefix="")
     x  = vocab.tokens[x]
     ys = map(xp->vocab.tokens[xp],protos)
     scale = 1000/15
@@ -1278,8 +1278,9 @@ function process_for_viz(vocab, pred, protos, scores, probs)
         ixp_end     = length(vocab)+length(xps[1])
         outsoft     = probs[1:ixp_end, 1:length(xtrimmed)]
     elseif length(protos) == 2
-        ixpp_start  = length(vocab)+length(xp)+1
-        ixpp_end    = length(vocab)+length(xp)+length(xps[2])
+        ixp_end     = length(vocab)+length(xps[1])	
+        ixpp_start  = length(vocab)+length(protos[1])+1
+        ixpp_end    = length(vocab)+length(protos[1])+length(xps[2])
         indices     = [collect(1:ixp_end); collect(ixpp_start:ixpp_end)]
         outsoft     = probs[indices,1:length(xtrimmed)]
     else
@@ -1311,7 +1312,7 @@ function sample(model::Recombine, dataloader; N::Int=model.config["N"], sampler=
                 for i=1:b
                     @inbounds push!(samples,process_for_viz(vocab,
                     preds[1][i,:],
-                    ntupel(k->protos[k].tokens[i,:],length(protos)),
+                    ntuple(k->protos[k].tokens[i,:],length(protos)),
                     ntuple(k->scores[k][:,i,:],length(protos)),
                     outputs[:,i,:]))
                 end
