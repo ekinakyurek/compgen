@@ -23,7 +23,7 @@ This repository is the official implementation of Learning to Recombine Data for
   - Jupyter Notebook with Python 3 (Used for analysis of results.)
 
 
-Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below. We dound AWS AMI: Knet-1.3.0 (ami-0469b38d93e8ab9da) compatible with the requirements here for convenience.
+Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described above. Additionally, we find AWS AMI: Knet-1.3.0 (ami-0469b38d93e8ab9da) to be compatible with the requirements here for convenience.
 
 ## Requirements
 
@@ -40,6 +40,7 @@ To install requirements:
 4. Downloads `SCAN` and `SIGMORPHON 2018` preprocessed neighborhood files from server.
 
   **Optional**:
+  
 5. Downloads pre-trained generative models for `SCAN` and `SIGMORPHON 2018` along with generated samples to the [checkpoints/](checkpoints/) folder.
 
 Note that if there are issues with any of the steps 1 through 4, the experiments might fail.
@@ -49,9 +50,9 @@ Note that if there are issues with any of the steps 1 through 4, the experiments
 
 To verify the results presented in the paper, you may run the scripts to train models and see the evaluations. During training logs will be created at [checkpoints/](checkpoints/) folder.
 
-All experiment scripts can be found at [exps/](exps/)
+All experiment scripts are found at [exps/](exps/)
 
-For example to run the 2-proto model with VAE on the `jump` split of `SCAN`, use
+For example, to run the 2-proto model with VAE on the `jump` split of `SCAN`, use
 
 ```SHELL
 cd exps
@@ -104,11 +105,11 @@ Moreover, after running all experiments, one can refer to `analyze_results.ipynb
 
 
 ## Trouble Shooting
-## Trouble Shooting
+
 If you get warnings about the GPU such examples in below, you should refer to requirements section
 ```
-  - Warning: Knet cannot use the GPU: ErrorException("curandCreateGenerator: 203: Initialization of CUDA failed"
-  - [ Info: CUDAdrv.jl failed to initialize, GPU functionality unavailable (set JULIA_CUDA_SILENT or JULIA_CUDA_VERBOSE to silence or expand this message)
+Warning: Knet cannot use the GPU: ErrorException("curandCreateGenerator: 203: Initialization of CUDA failed"
+[ Info: CUDAdrv.jl failed to initialize, GPU functionality unavailable (set JULIA_CUDA_SILENT or JULIA_CUDA_VERBOSE to silence or expand this message)
 ```
 If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, it means you need more GPU memory.
 
