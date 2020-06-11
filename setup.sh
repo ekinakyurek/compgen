@@ -18,7 +18,8 @@ if [ "$jlversion" != "1.2.0" ]; then
     if [ -f $jlpath ]; then
        echo "Julia is succesfully installed to ${path}/julia-1.2.0/"
        echo "type following on your bash before running experiments. "
-       echo "export julia=${jlpath}"
+       binpath=$(realpath ${path}/julia-1.2.0/bin)
+       echo "export PATH=$binpath:\$PATH"
     else
        echo "Julia installation is broken"
     fi
@@ -27,7 +28,8 @@ else
   echo "You've correct version of Julia: ${jlversion}"
 fi
 echo "Checking out required Julia packages..."
-alias julia=`${jlpath}`
+binpath=$(realpath ${path}/julia-1.2.0/bin)
+export PATH=$binpath:$PATH
 julia --project -e 'using Pkg; Pkg.instantiate();'
 
 echo "Clonning raw dataset files from the original sources..."
