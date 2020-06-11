@@ -5,20 +5,20 @@ export RECOMB_TASK=SCAN
 VAE=false
 for nproto in 2; do
 	for seed in 0 1 2 3 4; do
-		# julia --project runexperiments_scan.jl --seed $seed \
-		# --config configs/recombine_scan.jl \
-		# --copy \
-		# --nproto 2 \
-		# --epoch 8 \
-		# --outdrop_test \
-		# --split add_prim \
-		# --splitmodifier jump \
-		# --kill_edit \
-		# --generate \
-		# --beam \
-		# --paug 0.01 \
-		# > checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.log \
-		# 2> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.err
+		julia --project runexperiments_scan.jl --seed $seed \
+		--config configs/recombine_scan.jl \
+		--copy \
+		--nproto 2 \
+		--epoch 8 \
+		--outdrop_test \
+		--split add_prim \
+		--splitmodifier jump \
+		--kill_edit \
+		--generate \
+		--beam \
+		--paug 0.01 \
+		> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.log \
+		2> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.err
 
 		julia --project runexperiments_scan.jl --seed $seed \
 		--config configs/recombine_scan.jl \

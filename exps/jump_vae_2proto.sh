@@ -1,6 +1,6 @@
 #!/bin/sh
 cd ../
-export CUDA_VISIBLE_DEVICES=3
+# export CUDA_VISIBLE_DEVICES=3
 export RECOMB_TASK=SCAN
 VAE=true
 for nproto in 2; do
