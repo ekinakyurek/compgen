@@ -1,6 +1,6 @@
 #!/bin/bash
 jlversion=`julia -v | grep -Eo '[0-9]+\.[0-9]+\.[0-9]'`
-if [ "$jlversion" != "1.2.1" ]; then
+if [ "$jlversion" != "1.2.0" ]; then
   echo -n "Your julia version ${jlversion} is not compatible with requirements,
            do you want me to install another julia with version 1.2.0, if yes, please give a path, if no, please type no [path/no]: "
   read answer
