@@ -10,6 +10,7 @@ if [ "$jlversion" != "1.2.0" ]; then
   else
     path=$answer
     echo "julia 1.2.0 will be installed to ${path}/julia-1.2.0/"
+    echo "Julia also creates a package directory at ~/.julia, if there is no"
     echo -n "Do you want to continue? press any button, or kill: "
     read answer
     sh ./install-julia.sh 1.2.0 $path
@@ -39,7 +40,7 @@ julia --project -L src/parser.jl -e 'download(SIGDataSet); download(SCANDataSet)
 mkdir -p checkpoints/SCANDataSet/logs
 if [ -f data/SCANDataSet/jump.jld2 ] && [ -f data/SCANDataSet/around_right.jld2 ]; then
     echo "SCAN preprocessed data files exists, skipping the download..."
-else 
+else
     echo "Downloading SCAN preprocessed files 80MB"
     curl --url https://recomb.s3.us-east-2.amazonaws.com/jump.jld2 --output data/SCANDataSet/jump.jld2
     curl --url https://recomb.s3.us-east-2.amazonaws.com/around_right.jld2 --output data/SCANDataSet/around_right.jld2
@@ -82,6 +83,8 @@ else
 fi
 
 echo "If you didn't get any error till this point, you've succesfully setup this repo for the experiments."
+echo "If you installed a local Julia during the setuo, add Julia to your path before running anything. "
+echo "export PATH=$binpath:\$PATH"
 #echo -n "\"\$pip install -r requirement.txt\" will be called. Do you want to continue? press any button, or kill"
 #read answer
 #pip install -r requirements.txt

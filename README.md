@@ -5,12 +5,9 @@ This repository is the official implementation of Learning to Recombine Data for
 ![Recombination Model](./recomb.png "Recomb Network")
 
 ## Dependencies
-
-Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below.
-
 - **OS**: Linux or macOS
 - **Language**: Julia 1.2.0 (if not available, the setup script will automatically install a local copy.)
-- **Hardware**: NVIDIA GPU (that supports CUDA and cuDNN), with network connection, 3GB disk space including Julia installation.
+- **Hardware**: NVIDIA GPU (that supports CUDA and cuDNN), with network connection, 3GB disk space including Julia installation. (we only tested with 32GB V100s)
 - **Libraries**: CUDA Runtime Library and cuDNN Developer Toolkits (tested with CUDA: 10.1.105_418.39 and cuDNN: 7.5.0)
   - If you don't have them, you might get a warning about GPU functionality which means you are not able to run the code with a GPU. If this is the case, _follow the [instructions](https://stackoverflow.com/a/47503155)_ by using the below download links selecting the abovementioned versions. This is a local installation and will not affect your system.
   ```
@@ -25,6 +22,8 @@ Note that since this codebase is for reproducibility purposes you might require 
 - **Optional**:
   - Jupyter Notebook with Python 3 (Used for analysis of results.)
 
+
+Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below. We found AWS AMI: Knet-1.3.0 (ami-0469b38d93e8ab9da) compatible with the requirements here, you might consider it for convenience.
 
 ## Requirements
 
@@ -102,3 +101,8 @@ Moreover, after running all experiments, one can refer to `analyze_results.ipynb
 | 0proto   |                      0.36 |                     0.79 |                    0.06 |                   0.61 |                       0.56 |                      0.85 |
 | 1proto   |                      0.31 |                     0.8  |                    0.05 |                   0.59 |                       0.57 |                      0.87 |
 | 2proto   |                      0.19 |                     0.77 |                    0.03 |                   0.59 |                       0.59 |                      0.87 |
+
+
+## Trouble Shooting
+If you get a warning tells that Knet or CuArrays can't see the GPU, you should refer to requirements section
+If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, it means you need more GPU memory.
