@@ -9,9 +9,9 @@ This repository is the official implementation of Learning to Recombine Data for
 Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below.
 
 - **OS**: Linux or macOS
-- **Language**: Julia 1.2.0 (If not available, the setup script will automatically install a local copy.)
+- **Language**: Julia 1.2.0 (if not available, the setup script will automatically install a local copy.)
 - **Hardware**: NVIDIA GPU (that supports CUDA and cuDNN), with network connection
-- **Libraries**: CUDA Runtime Library and cuDNN Developer Toolkits (Tested with CUDA: 10.1.105_418.39 and cuDNN: 7.5.0)
+- **Libraries**: CUDA Runtime Library and cuDNN Developer Toolkits (tested with CUDA: 10.1.105_418.39 and cuDNN: 7.5.0)
   - If you don't have them, you might get a warning about GPU functionality which means you are not able to run the code with a GPU. If this is the case, _follow the [instructions](https://stackoverflow.com/a/47503155)_ by using the below download links selecting the abovementioned versions. This is a local installation and will not affect your system.
   ```
   CUDA: https://developer.nvidia.com/cuda-10.1-download-archive-base

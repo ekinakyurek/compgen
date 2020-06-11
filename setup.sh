@@ -2,14 +2,14 @@
 jlversion=`julia -v | grep -Eo '[0-9]+\.[0-9]+\.[0-9]'`
 if [ "$jlversion" != "1.2.0" ]; then
   echo -n "Your julia version ${jlversion} is not compatible with requirements,
-           do you want me to install another julia with version 1.2.0 ? If yes, give a path, if no, type no [path/no]: "
+           do you want me to install another julia with version 1.2.0, if yes, please give a path, if no, please type no [path/no]: "
   read answer
   if [ "$answer" = "no" ]; then
     echo "quits..."
     exit 1
   else
     path=$answer
-    echo "julia 1.2.0 will be installed to ${path}"
+    echo "julia 1.2.0 will be installed to ${path}/julia-1.2.0/"
     echo -n "Do you want to continue? press any button, or kill: "
     read answer
     sh ./install-julia.sh 1.2.0 $path
@@ -27,6 +27,7 @@ else
   echo "You've correct version of Julia: ${jlversion}"
 fi
 echo "Checking out required Julia packages..."
+alias julia=`${jlpath}`
 julia --project -e 'using Pkg; Pkg.instantiate();'
 
 echo "Clonning raw dataset files from the original sources..."
