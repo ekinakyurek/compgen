@@ -1,6 +1,6 @@
 #!/bin/bash
 jlversion=`julia -v | grep -Eo '[0-9]+\.[0-9]+\.[0-9]'`
-if [ "$jlversion" != "1.2.0" ]; then
+if [ "$jlversion" != "1.2.1" ]; then
   echo -n "Your julia version ${jlversion} is not compatible with requirements,
            do you want me to install another julia with version 1.2.0, if yes, please give a path, if no, please type no [path/no]: "
   read answer
@@ -83,7 +83,7 @@ else
 fi
 
 echo "If you didn't get any error till this point, you've succesfully setup this repo for the experiments."
-echo "If you installed a local Julia during the setuo, add Julia to your path before running anything. "
+echo "If you installed a local Julia during the setup, add Julia to your path before running anything. "
 echo "export PATH=$binpath:\$PATH"
 #echo -n "\"\$pip install -r requirement.txt\" will be called. Do you want to continue? press any button, or kill"
 #read answer

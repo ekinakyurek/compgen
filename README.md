@@ -23,7 +23,7 @@ This repository is the official implementation of Learning to Recombine Data for
   - Jupyter Notebook with Python 3 (Used for analysis of results.)
 
 
-Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below. We found AWS AMI: Knet-1.3.0 (ami-0469b38d93e8ab9da) compatible with the requirements here, you might consider it for convenience.
+Note that since this codebase is for reproducibility purposes you might require specific versions of the dependencies as described below. We dound AWS AMI: Knet-1.3.0 (ami-0469b38d93e8ab9da) compatible with the requirements here for convenience.
 
 ## Requirements
 
@@ -104,5 +104,11 @@ Moreover, after running all experiments, one can refer to `analyze_results.ipynb
 
 
 ## Trouble Shooting
-If you get a warning tells that Knet or CuArrays can't see the GPU, you should refer to requirements section
+## Trouble Shooting
+If you get warnings about the GPU such examples in below, you should refer to requirements section
+```
+  - Warning: Knet cannot use the GPU: ErrorException("curandCreateGenerator: 203: Initialization of CUDA failed"
+  - [ Info: CUDAdrv.jl failed to initialize, GPU functionality unavailable (set JULIA_CUDA_SILENT or JULIA_CUDA_VERBOSE to silence or expand this message)
+```
 If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, it means you need more GPU memory.
+
