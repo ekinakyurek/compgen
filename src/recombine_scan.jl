@@ -849,20 +849,24 @@ function attension_visualize_scan(vocab, probs, scores, protos, x; prefix="")
                   legend=false,
                   xtickfont=font(9, "Serif"),
                   ytickfont=font(9, "Serif"),
-                  xrotation=30,
+                  xrotation=45,
                   xticks=(1:length(x),x),
+                  xlabel="generated sample",
                   ticks=:all,
                   size=(length(x)*scale, length(x)*scale),
                   dpi=200,
                 )
     words = removeunicodes(vocab.tokens.toElement)
-    y3 = vcat(words, map(xp->"xp" .* string.(1:length(xp)), protos)...)
+    for (i,xp) in enumerate(protos)
+        append!(words,"x_$(i)-" .* string.(1:length(xp)))
+    end
+    y3 = words
     p3 = heatmap(probs;yticks=(1:length(y3),y3), title="action probs", attributes...)
     if length(protos)  == 2
         l = @layout [ a{0.5w} [b
                                c{0.5h}]]
-        p1 = heatmap(scores[1];yticks=(1:length(ys[1]),ys[1]),title="xp-x attention", attributes...)
-        p2 = heatmap(scores[2];yticks=(1:length(ys[2]),ys[2]),title="xpp-x attention", attributes...)
+        p1 = heatmap(scores[1];yticks=(1:length(ys[1]),ys[1]),title="x-x1 attention", attributes...)
+        p2 = heatmap(scores[2];yticks=(1:length(ys[2]),ys[2]),title="x-x2 attention", attributes...)
         p  = Plots.plot(p3,p1,p2; layout=l)
     elseif length(protos)  == 1
         l = @layout [a{0.5w}  b]
@@ -1278,7 +1282,7 @@ function process_for_viz(vocab, pred, protos, scores, probs)
         ixp_end     = length(vocab)+length(xps[1])
         outsoft     = probs[1:ixp_end, 1:length(xtrimmed)]
     elseif length(protos) == 2
-        ixp_end     = length(vocab)+length(xps[1])	
+        ixp_end     = length(vocab)+length(xps[1])
         ixpp_start  = length(vocab)+length(protos[1])+1
         ixpp_end    = length(vocab)+length(protos[1])+length(xps[2])
         indices     = [collect(1:ixp_end); collect(ixpp_start:ixpp_end)]
