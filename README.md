@@ -30,6 +30,8 @@ Note that since this codebase is for reproducibility purposes you might require 
 
 To install requirements:
 ```SHELL
+   git clone https://github.com/ekinakyurek/compgen
+   cd compgen
    sh setup.sh
 ```
 `setup.sh` performs the following steps interactively:
