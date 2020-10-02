@@ -65,5 +65,7 @@ config = Dict(
              "temp"=>0.05,
              "use_insert_delete"=>false,
              "p(xp=x)" => 0.01,
-             "beam" => false
+             "beam" => false,
+             "rare_token"=>true,
+             "modeldir"=>nothing
              )

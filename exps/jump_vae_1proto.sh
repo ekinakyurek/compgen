@@ -16,8 +16,8 @@ for nproto in 1; do
 		--generate \
 		--paug 0.01 \
 		--temp 0.4 \
-		> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.log \
-		2> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.err
+		> ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.log \
+		2> ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.err
 
 		julia --project runexperiments_scan.jl --seed $seed \
 		--config configs/recombine_scan.jl \
@@ -29,8 +29,8 @@ for nproto in 1; do
 		--paug 0.01 \
 		--baseline \
 		--usegenerated \
-		--loadprefix checkpoints/SCANDataSet/${nproto}proto.vae.${VAE}.jump.seed.${seed}. \
-		> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.cond.log  \
-		2> checkpoints/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.cond.err
+		--loadprefix ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/${nproto}proto.vae.${VAE}.jump.seed.${seed}. \
+		> ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.cond.log  \
+		2> ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs/${nproto}proto.vae.${VAE}.jump.seed.$seed.cond.err
 	done
 done

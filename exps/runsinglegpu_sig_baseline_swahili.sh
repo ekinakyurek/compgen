@@ -16,7 +16,7 @@ for hints in 4 8 16; do
 		--seperate_emb \
 		--lang ${LANG} \
 		--baseline \
-		> checkpoints/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.log  \
-		2> checkpoints/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.err
+		> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.log  \
+		2> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.err
 	done
 done

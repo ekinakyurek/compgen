@@ -18,8 +18,6 @@ struct Recombine{Data}
     config::Dict
 end
 
-
-
 function Recombine(vocab::Vocabulary{T}, config; embeddings=nothing) where T<:DataSet
     if config["kill_edit"]
         x_encoder, z_emb, enc_linear, x_xp_inter  = nothing, nothing, nothing, nothing
@@ -232,7 +230,6 @@ function preprocess2(m::Recombine{T}, train, devs...) where T<:DataSet
     return adjlists
 end
 
-
 function beam_decode(model::Recombine, x, protos, z; forviz=false)
     T,B         = eltype(arrtype), size(z,2)
     H,V,E       = model.config["H"], length(model.vocab.tokens), model.config["E"]
@@ -250,7 +247,6 @@ function beam_decode(model::Recombine, x, protos, z; forviz=false)
     score_arr, output_arr = traces[1][5], traces[1][6]
     return outputs, probs, score_arr, output_arr
 end
-
 
 function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=false)
     result_traces = []
@@ -330,8 +326,6 @@ function beam_search(model::Recombine, traces, protos, masks, z; step=1, forviz=
     return new_traces
 end
 
-
-
 function decode(model::Recombine, x, protos, z; IDcontext=nothing, sampler=argmax, training=true, mixsampler=false, temp=0.4, cond=false)
     T,B        = eltype(arrtype), size(z,2)
     H,V,E      = model.config["H"], length(model.vocab.tokens), model.config["E"]
@@ -405,7 +399,6 @@ function decode(model::Recombine, x, protos, z; IDcontext=nothing, sampler=argma
     final, preds, exp.(probs)
 end
 
-
 function decode_onestep(model::Recombine, states, protos, masks, z, input, prev_context, positions)
     pdrop, attdrop, outdrop = model.config["pdrop"], model.config["attdrop"], model.config["outdrop"]
     e  = dropout(mat(model.decembed(input),dims=1), pdrop)
@@ -429,7 +422,6 @@ function decode_onestep(model::Recombine, states, protos, masks, z, input, prev_
     ycontext = dropout(yfinal, pdrop) #At_mul_B(model.decembed.weight,ycontext)
     yfinal, attns, scores, (out.hidden, out.memory), weights, (ycontext,)
 end
-
 
 function encodeID(model::Recombine, I, Imask)
     if isempty(I)
@@ -471,7 +463,6 @@ function encode(m::Recombine, x, protos; ID=nothing, prior=false)
     end
     return z, protos
 end
-
 
 function ind2BT(write_inds, copy_inds, H, BT)
     write_batches  = map(ind->(ind ÷ H) + 1, write_inds .- 1)
@@ -816,7 +807,6 @@ if get(ENV,"recombine_viz",false)
     pyplot()
 end
 
-
 function viz(model, data; N=5)
     samples = sample(model, shuffle(data); N=N, sampler=sample, prior=false, beam=true, forviz=true)
     vocab = model.vocab.tokens
@@ -878,14 +868,14 @@ function attension_visualize_scan(vocab, probs, scores, protos, x; prefix="")
     Plots.savefig(p, prefix*"_attention_map.pdf")
 end
 
-
 function pickprotos_conditional(model::Recombine{SCANDataSet}, esets; subtask=nothing)
     dist  = Levenshtein()
+    esets = map(unique,esets)
     trn        = map(d->xfield(SCANDataSet,d,true),esets[1])
     tst        = map(d->xfield(SCANDataSet,d,true),esets[2])
     trnwords   = map(d->d.input,esets[1])
     trnstrs    = map(d->String(map(UInt8,d.input)),esets[1])
-    testwords  = map(d->d.output,esets[2])
+    testwords  = map(d->d.input,esets[2])
     teststrs   = map(d->String(map(UInt8,d.input)),esets[2])
     processed  = []
     for i=1:length(testwords)
@@ -925,12 +915,12 @@ function pickprotos_conditional(model::Recombine{SCANDataSet}, esets; subtask=no
                 end
             end
             if isempty(xpp_candidates)
-                current_xpp = xfield(SCANDataSet,rand(esets[1]),true)
+                #current_xpp = xfield(SCANDataSet,rand(esets[1]),true)
                 push!(processed, (x=tst[i], xp=trn[n], xpp=rand(trn), ID=inserts_deletes(tst[i],trn[n]))) #push!(neighbours, rand(inds))
             else
                 xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
                 for xpp in xpp_candidates
-                    current_xpp = xfield(SCANDataSet,trn[xpp],true)
+                    #current_xpp = xfield(SCANDataSet,esets[1][xpp],true)
                     push!(processed, (x=tst[i], xp=trn[n], xpp=trn[xpp], ID=inserts_deletes(tst[i],trn[n])))
                 end
             end
@@ -938,137 +928,6 @@ function pickprotos_conditional(model::Recombine{SCANDataSet}, esets; subtask=no
     end
     processed
 end
-
-
-function pickprotos_conditional(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
-    dist   = Levenshtein()
-    trndata = esets[1]
-    trnstr  = map(d->String(map(UInt8,d.surface)),trndata)
-    data = []
-    for k=2:length(esets)
-        processed = []
-        cur_test  = esets[k]
-        for i=1:length(cur_test)
-            cur_input = cur_test[i].surface
-            cur_str   = map(UInt8,cur_input)
-            neihgbours = []
-            for j=1:length(trnstr)
-                trn_ex_str = trnstr[j]
-                diff = compare(cur_str,trn_ex_str,dist)
-                push!(neighbours,(j,diff))
-            end
-            xp = trndata[findmax(second.(neighbours))[2]]
-            for j=1:length(trnstr)
-                xpp     = trndata[j]
-                xpp_str = trnstr[j]
-                difftag = setdiff(cur_input, xp.surface, xpp.surface)
-                trn_ex_str = trnstr[j]
-                diff = compare(cur_str,trn_ex_str,dist)
-                push!(neighbours,(j,diff))
-            end
-        end
-    end
-    data
-end
-
-function preprocess(m::Recombine{SIGDataSet}, train, devs...)
-    println("preprocessing SIGDataSet")
-    T = SIGDataSet
-    dist = Levenshtein()
-    thresh, cond, maxcnt, masktags, subtask =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"], m.config["masktags"], m.config["subtask"]
-    sets = map((train,devs...)) do set
-            map(d->(x=xfield(T,d,cond; masktags=masktags, subtask=subtask), lemma=d.lemma, surface=d.surface, tags=(masktags ?  fill!(similar(d.tags),specialIndicies.mask) : d.tags)),set)
-    end
-    sets = map(set->unique(s->s.x,set),sets)
-
-    words = map(sets) do set
-        map(d->String(map(UInt8,d.x)),set)
-    end
-
-    lemmas = map(sets) do set
-        map(d->String(map(UInt8,d.lemma)),set)
-    end
-
-    tags = map(sets) do set
-            map(d->String(map(UInt8,d.tags)),set)
-    end
-
-    surfaces = map(sets) do set
-        map(d->String(map(UInt8,d.surface)),set)
-    end
-
-    trnwords   = first(words)
-    trnlemmas  = first(lemmas)
-    trntags    = first(tags)
-    trnsurface = first(surfaces)
-
-    adjlists  = []
-    for (k,set) in enumerate(words)
-        adj = Dict((i,[]) for i=1:length(set))
-        processed = []
-        lemma_set   = lemmas[k]
-        tag_set     = tags[k]
-        surface_set = surfaces[k]
-        for i in progress(1:length(set))
-            cw            = set[i]
-            clemma        = lemma_set[i]
-            ctag          = tag_set[i]
-            csurface      = surface_set[i]
-            neighbours    = []
-            cnt   = 0
-            inds  = randperm(length(trnwords))
-            for j in inds
-                w          = trnwords[j]
-                lemma      = trnlemmas[j]
-                tag        = trntags[j]
-                surface = trnsurface[j]
-                diff  = compare(cw,w,dist)
-                ldiff = compare(clemma, lemma, dist)
-                #tdiff = compare(ctag,tag,dist)
-                sdiff = compare(csurface,surface,dist)
-                if  diff != 1 && (ldiff > thresh  || sdiff > thresh)
-                    push!(neighbours,j)
-                    cnt+=1
-                    cnt == maxcnt && break
-                end
-            end
-            if isempty(neighbours)
-                push!(neighbours, rand(inds))
-            end
-            for n in neighbours
-                x′′ = []
-                ntokens = sets[1][n].x
-                xtokens = sets[k][i].x
-                tokens  = setdiff(xtokens,ntokens)
-                diffw   = String(map(UInt8,tokens))
-                xtag    = sets[k][i].tags
-                ntag    = sets[1][n].tags
-                difftag = setdiff(xtag,ntag)
-                xtag    = tags[k][i]
-                cnt = 0
-                for l in inds
-                    if l != n && l !=i
-                        w           = trnwords[l]
-                        tag         = trntags[l]
-                        tag_tokens  = sets[1][l].tags
-                        diff        = compare(diffw,w,dist)
-                        tdiff       = compare(trntags[n],tag,dist)
-                        trealdiff   = setdiff(difftag,tag_tokens)
-                        if length(trealdiff) == 0 &&  tdiff > thresh
-                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l].x, ID=inserts_deletes(xtokens,ntokens)))
-                            cnt+=1
-                            cnt == maxcnt && break
-                        end
-                    end
-                end
-            end
-        end
-        push!(adjlists, processed)
-    end
-    return adjlists
-end
-
-
 
 function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=nothing)
     p_std, p_mean = std_mean((length(p.xp) for p in first(processed)))
@@ -1085,6 +944,23 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
     inpdict, outdict =  Set(Int[]), Set(Int[])
     for d in inputs; for t in d; push!(inpdict,t); end; end
     for d in outputs; for t in d; push!(outdict,t); end; end
+
+    cnts = Dict()
+    for (i,tset) in enumerate((inputs,outputs))
+        for d in tset
+            for t in d
+                cnts[[t]] = get(cnts,t,0) + 1;
+            end
+            for j in 1:length(d)-1
+                t = d[j:j+1]
+                cnts[t] = get(cnts,t,0) + 1;
+            end
+        end
+    end
+
+    rare = [t for (t,cnt) in cnts if cnt > 1 && cnt <= 20]
+    println("rare tags: ",model.vocab.tokens[rare])
+
     if config["nproto"] == 2
         @inbounds for i=1:length(set)
             length(set[i]) > pthresh && continue
@@ -1101,124 +977,16 @@ function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=not
                 push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=Int[specialIndicies.bow], ID=(I=Int[],D=Int[]))) #FIXME: ID
         end
     end
-    data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing
-end
-
-function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="analyses")
-    eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
-    vocab   = model.vocab.tokens
-    set     = map(d->xfield(SIGDataSet,d,true; subtask=subtask),eset)
-    outputs = map(d->[d.lemma;d.tags], eset)
-    inputs  = map(d->d.surface, eset)
-    tags    = map(d->d.tags, eset)
-
-    if subtask == "reinflection"
-        inputs, outputs = outputs, inputs
-    end
-
-    dicts = ntuple(i->Dict(),3)
-    for (i,tset) in enumerate((inputs,outputs,tags))
-        dict = dicts[i];
-        for d in tset;
-            for t in d;
-                dict[t] = get(dict,t,0) + 1;
-            end;
-        end
-    end
-
-    tag_counts = dicts[3]
-
-    dicts = map(d->Set(collect(keys(d))), dicts)
-
-   @show tag_counts
-
-   rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 40 && isuppercase(vocab[t][1])]
-   println(vocab[rare])
-
-   weird_items = [
-       i for (i, tag) in enumerate(tags)
-       if length(intersect(Set(tag), Set(rare))) > 0
-   ]
-
-   # println("weird")
-   # for i in weird_items
-   #     inp, out = inputs[i], outputs[i]
-   #     println(join(vocab[inp]," "))
-   #     println(join(vocab[out]," "))
-   # end
-
-   data = []
-   trnitems = 1:length(set)
-   for j=1:length(esets[3])
-       allow_exact = j % 2 == 1
-       if length(weird_items) == 0
-           push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems], ID=(I=Int[],D=Int[])))
-           continue
-       end
-       tag = rand(rare)
-       println(vocab[tag])
-       #println(vocab[tag])
-       shuffle!(weird_items)
-       i1 = rand([i for i in weird_items if tag in tags[i]])
-       #println(join(vocab[set[i1]]," "))
-       item1, item1_out = set[i1], tags[i1]
-       sort_key = i-> (!(allow_exact && tags[i] == item1_out),
-                         -length(intersect(Set(tags[i]),Set(item1_out))))
-
-       weird_available = sort([i for i in trnitems if i != i1], by=sort_key)
-       i2 = weird_available[1]
-       item2 = set[i2]
-       item2_out = tags[i2]
-
-       all_available = sort([i for i in trnitems if i != i1 && i != i2], by=sort_key)
-
-       i3 = all_available[1]
-       item3 = set[i3]
-       for (k1,k2) in  ((i1, i2), (i1, i3), (i2, i1), (i3, i1))
-           push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2], ID=(I=Int[],D=Int[])))
-       end
-   end
-
-    #
-    # for i=1:length(set)
-    #      p_inp, p_out = inputs[i], outputs[i]
-    #      p_lemmaptags = subtask == "reinflection" ? p_inp : p_out
-    #      p_lemma, p_ts = split_array(p_lemmaptags,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
-    #      for j=1:length(set)
-    #         j==i && continue
-    #         pp_inp, pp_out = inputs[j], outputs[j]
-    #         pp_lemmaptags = subtask == "reinflection" ? pp_inp : pp_out
-    #         pp_lemma, pp_ts = split_array(pp_lemmaptags,specialIndicies.iosep)
-    #         if 0 < length(setdiff(p_ts,pp_ts)) < 3
-    #             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
-    #         end
-    #     end
-    # end
-    data, Set(inputs), Set(outputs), dicts[1], dicts[2], Set(tags), dicts[3]
+    data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing, rare
 end
 
 function io_to_line(vocab::Vocabulary{SCANDataSet}, input, output; subtask=nothing)
     v = vocab.tokens; "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
 end
 
-
-function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinflection")
-    v = vocab.tokens
-    input, output = v[input], v[output]
-    if subtask == "analyses"
-        lemma, ts = split_array(output, isuppercaseornumeric; include=true)
-        "$(join(lemma))\t$(join(input))\t$(join(ts,';'))"
-    else
-        lemma, ts = split_array(input, isuppercaseornumeric; include=true)
-        "$(join(lemma))\t$(join(output))\t$(join(ts,';'))"
-    end
-end
-
-
-
 function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, Nsample=N, K=300, mixsampler=false)
     vocab, task, subtask  = model.vocab, model.config["task"], get(model.config, "subtask", nothing)
-    data, inputs, outputs, inpdict, outdict, tags, tagdict  = pickprotos(model, processed, esets; subtask=subtask)
+    data, inputs, outputs, inpdict, outdict, tags, tagdict, rare  = pickprotos(model, processed, esets; subtask=subtask)
     nonexisttag = true
     iosep = specialIndicies.sep
     #data = [processed[2];processed[3]] # when you want to cheat!
@@ -1247,6 +1015,15 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
                     #nonexisttag =  tag ∉ tags && all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
                     nonexisttag =  all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
                     #nonexisttag = true
+                else
+                    if get(model.config,"rare_token",true)
+                        nonexisttag  = any(r->occursin(join(vocab.tokens[r]," "),vocab.tokens[[input;output]]),rare)
+                        # if model.config["splitmodifier"] == "around_right"
+                        #     nonexisttag = occursin("around right", join(vocab.tokens[input]," "))
+                        # else
+                        #     nonexisttag = occursin("jump", join(vocab.tokens[input]," "))
+                        # end
+                    end
                 end
                 line = io_to_line(vocab, input, output; subtask=subtask)
                 #@show line
@@ -1370,3 +1147,242 @@ function kl_calc(m)
     kl_term     = (1.0-m.config["kill_edit"])*(kl_edit_vec + norm_term)
     return kl_term
 end
+
+
+# function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinflection")
+#     v = vocab.tokens
+#     input, output = v[input], v[output]
+#     if subtask == "analyses"
+#         lemma, ts = split_array(output, isuppercaseornumeric; include=true)
+#         "$(join(lemma))\t$(join(input))\t$(join(ts,';'))"
+#     else
+#         lemma, ts = split_array(input, isuppercaseornumeric; include=true)
+#         "$(join(lemma))\t$(join(output))\t$(join(ts,';'))"
+#     end
+# end
+#
+#
+
+
+#
+# function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="analyses")
+#     eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
+#     vocab   = model.vocab.tokens
+#     set     = map(d->xfield(SIGDataSet,d,true; subtask=subtask),eset)
+#     outputs = map(d->[d.lemma;d.tags], eset)
+#     inputs  = map(d->d.surface, eset)
+#     tags    = map(d->d.tags, eset)
+#
+#     if subtask == "reinflection"
+#         inputs, outputs = outputs, inputs
+#     end
+#
+#     dicts = ntuple(i->Dict(),3)
+#     for (i,tset) in enumerate((inputs,outputs,tags))
+#         dict = dicts[i];
+#         for d in tset;
+#             for t in d;
+#                 dict[t] = get(dict,t,0) + 1;
+#             end;
+#         end
+#     end
+#
+#     tag_counts = dicts[3]
+#
+#     dicts = map(d->Set(collect(keys(d))), dicts)
+#
+#    @show tag_counts
+#
+#    rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 40 && isuppercase(vocab[t][1])]
+#    println(vocab[rare])
+#
+#    weird_items = [
+#        i for (i, tag) in enumerate(tags)
+#        if length(intersect(Set(tag), Set(rare))) > 0
+#    ]
+#
+#    # println("weird")
+#    # for i in weird_items
+#    #     inp, out = inputs[i], outputs[i]
+#    #     println(join(vocab[inp]," "))
+#    #     println(join(vocab[out]," "))
+#    # end
+#
+#    data = []
+#    trnitems = 1:length(set)
+#    for j=1:length(esets[3])
+#        allow_exact = j % 2 == 1
+#        if length(weird_items) == 0
+#            push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems], ID=(I=Int[],D=Int[])))
+#            continue
+#        end
+#        tag = rand(rare)
+#        println(vocab[tag])
+#        #println(vocab[tag])
+#        shuffle!(weird_items)
+#        i1 = rand([i for i in weird_items if tag in tags[i]])
+#        #println(join(vocab[set[i1]]," "))
+#        item1, item1_out = set[i1], tags[i1]
+#        sort_key = i-> (!(allow_exact && tags[i] == item1_out),
+#                          -length(intersect(Set(tags[i]),Set(item1_out))))
+#
+#        weird_available = sort([i for i in trnitems if i != i1], by=sort_key)
+#        i2 = weird_available[1]
+#        item2 = set[i2]
+#        item2_out = tags[i2]
+#
+#        all_available = sort([i for i in trnitems if i != i1 && i != i2], by=sort_key)
+#
+#        i3 = all_available[1]
+#        item3 = set[i3]
+#        for (k1,k2) in  ((i1, i2), (i1, i3), (i2, i1), (i3, i1))
+#            push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2], ID=(I=Int[],D=Int[])))
+#        end
+#    end
+#
+#     #
+#     # for i=1:length(set)
+#     #      p_inp, p_out = inputs[i], outputs[i]
+#     #      p_lemmaptags = subtask == "reinflection" ? p_inp : p_out
+#     #      p_lemma, p_ts = split_array(p_lemmaptags,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
+#     #      for j=1:length(set)
+#     #         j==i && continue
+#     #         pp_inp, pp_out = inputs[j], outputs[j]
+#     #         pp_lemmaptags = subtask == "reinflection" ? pp_inp : pp_out
+#     #         pp_lemma, pp_ts = split_array(pp_lemmaptags,specialIndicies.iosep)
+#     #         if 0 < length(setdiff(p_ts,pp_ts)) < 3
+#     #             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+#     #         end
+#     #     end
+#     # end
+#     data, Set(inputs), Set(outputs), dicts[1], dicts[2], Set(tags), dicts[3]
+# end
+
+#
+# function pickprotos_conditional(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
+#     dist   = Levenshtein()
+#     trndata = esets[1]
+#     trnstr  = map(d->String(map(UInt8,d.surface)),trndata)
+#     data = []
+#     for k=2:length(esets)
+#         processed = []
+#         cur_test  = esets[k]
+#         for i=1:length(cur_test)
+#             cur_input = cur_test[i].surface
+#             cur_str   = map(UInt8,cur_input)
+#             neihgbours = []
+#             for j=1:length(trnstr)
+#                 trn_ex_str = trnstr[j]
+#                 diff = compare(cur_str,trn_ex_str,dist)
+#                 push!(neighbours,(j,diff))
+#             end
+#             xp = trndata[findmax(second.(neighbours))[2]]
+#             for j=1:length(trnstr)
+#                 xpp     = trndata[j]
+#                 xpp_str = trnstr[j]
+#                 difftag = setdiff(cur_input, xp.surface, xpp.surface)
+#                 trn_ex_str = trnstr[j]
+#                 diff = compare(cur_str,trn_ex_str,dist)
+#                 push!(neighbours,(j,diff))
+#             end
+#         end
+#     end
+#     data
+# end
+#
+# function preprocess(m::Recombine{SIGDataSet}, train, devs...)
+#     println("preprocessing SIGDataSet")
+#     T = SIGDataSet
+#     dist = Levenshtein()
+#     thresh, cond, maxcnt, masktags, subtask =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"], m.config["masktags"], m.config["subtask"]
+#     sets = map((train,devs...)) do set
+#             map(d->(x=xfield(T,d,cond; masktags=masktags, subtask=subtask), lemma=d.lemma, surface=d.surface, tags=(masktags ?  fill!(similar(d.tags),specialIndicies.mask) : d.tags)),set)
+#     end
+#     sets = map(set->unique(s->s.x,set),sets)
+#
+#     words = map(sets) do set
+#         map(d->String(map(UInt8,d.x)),set)
+#     end
+#
+#     lemmas = map(sets) do set
+#         map(d->String(map(UInt8,d.lemma)),set)
+#     end
+#
+#     tags = map(sets) do set
+#             map(d->String(map(UInt8,d.tags)),set)
+#     end
+#
+#     surfaces = map(sets) do set
+#         map(d->String(map(UInt8,d.surface)),set)
+#     end
+#
+#     trnwords   = first(words)
+#     trnlemmas  = first(lemmas)
+#     trntags    = first(tags)
+#     trnsurface = first(surfaces)
+#
+#     adjlists  = []
+#     for (k,set) in enumerate(words)
+#         adj = Dict((i,[]) for i=1:length(set))
+#         processed = []
+#         lemma_set   = lemmas[k]
+#         tag_set     = tags[k]
+#         surface_set = surfaces[k]
+#         for i in progress(1:length(set))
+#             cw            = set[i]
+#             clemma        = lemma_set[i]
+#             ctag          = tag_set[i]
+#             csurface      = surface_set[i]
+#             neighbours    = []
+#             cnt   = 0
+#             inds  = randperm(length(trnwords))
+#             for j in inds
+#                 w          = trnwords[j]
+#                 lemma      = trnlemmas[j]
+#                 tag        = trntags[j]
+#                 surface = trnsurface[j]
+#                 diff  = compare(cw,w,dist)
+#                 ldiff = compare(clemma, lemma, dist)
+#                 #tdiff = compare(ctag,tag,dist)
+#                 sdiff = compare(csurface,surface,dist)
+#                 if  diff != 1 && (ldiff > thresh  || sdiff > thresh)
+#                     push!(neighbours,j)
+#                     cnt+=1
+#                     cnt == maxcnt && break
+#                 end
+#             end
+#             if isempty(neighbours)
+#                 push!(neighbours, rand(inds))
+#             end
+#             for n in neighbours
+#                 x′′ = []
+#                 ntokens = sets[1][n].x
+#                 xtokens = sets[k][i].x
+#                 tokens  = setdiff(xtokens,ntokens)
+#                 diffw   = String(map(UInt8,tokens))
+#                 xtag    = sets[k][i].tags
+#                 ntag    = sets[1][n].tags
+#                 difftag = setdiff(xtag,ntag)
+#                 xtag    = tags[k][i]
+#                 cnt = 0
+#                 for l in inds
+#                     if l != n && l !=i
+#                         w           = trnwords[l]
+#                         tag         = trntags[l]
+#                         tag_tokens  = sets[1][l].tags
+#                         diff        = compare(diffw,w,dist)
+#                         tdiff       = compare(trntags[n],tag,dist)
+#                         trealdiff   = setdiff(difftag,tag_tokens)
+#                         if length(trealdiff) == 0 &&  tdiff > thresh
+#                             push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l].x, ID=inserts_deletes(xtokens,ntokens)))
+#                             cnt+=1
+#                             cnt == maxcnt && break
+#                         end
+#                     end
+#                 end
+#             end
+#         end
+#         push!(adjlists, processed)
+#     end
+#     return adjlists
+# end

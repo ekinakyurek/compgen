@@ -21,8 +21,9 @@ for nproto in 0; do
 			--lang ${LANG} \
 			--Nsamples 180 \
 			--N 180 \
-			> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.log \
-			2> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.err
+			--rare_token \
+			> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.log \
+			2> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.err
 
 			julia --project runexperiments.jl --seed $seed \
 			--hints $hints \
@@ -36,9 +37,9 @@ for nproto in 0; do
 			--baseline \
 			--usegenerated \
 			--kill_edit \
-			--loadprefix checkpoints/SIGDataSet/${LANG}/${nproto}proto.vae.${VAE}.hints.${hints}.seed.${seed}. \
-			> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.cond.log  \
-			2> checkpoints/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.cond.err
+			--loadprefix ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/${nproto}proto.vae.${VAE}.hints.${hints}.seed.${seed}. \
+			> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.cond.log  \
+			2> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/${nproto}proto.vae.${VAE}.hints.${hints}.seed.$seed.cond.err
 		done
 	done
 done

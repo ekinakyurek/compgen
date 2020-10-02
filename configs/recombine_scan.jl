@@ -62,5 +62,7 @@ config = Dict(
               "p(xp=x)" => 0.01,
               "nproto" => 2,
               "temp" => 0.2,
-              "beam" => true
+              "beam" => true,
+              "rare_token"=>false,
+              "modeldir"=>nothing
               )

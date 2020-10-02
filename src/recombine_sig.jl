@@ -106,62 +106,6 @@ calc_mi(model::Recombine, data) = nothing
 calc_au(model::Recombine, data) = nothing
 sampleinter(model::Recombine, data) = nothing
 
-function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
-    dist = Levenshtein()
-    thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
-    sets = map((train,devs...)) do set
-            map(d->xfield(T,d,cond),set)
-    end
-    sets = map(unique,sets)
-    words = map(sets) do set
-        map(d->String(map(UInt8,d)),set)
-    end
-    trnwords = first(words)
-    adjlists  = []
-    for (k,set) in enumerate(words)
-        adj = Dict((i,[]) for i=1:length(set))
-        processed = []
-        for i in progress(1:length(set))
-            cw            = set[i]
-            neighbours    = []
-            cnt   = 0
-            inds  = randperm(length(trnwords))
-            for j in inds
-                w    = trnwords[j]
-                diff = compare(cw,w,dist)
-                if diff > thresh && diff != 1
-                    push!(neighbours,j)
-                    cnt+=1
-                    cnt == maxcnt && break
-                end
-            end
-            if isempty(neighbours)
-                push!(neighbours, rand(inds))
-            end
-            for n in neighbours
-                x′′ = []
-                ntokens = sets[1][n]
-                xtokens = sets[k][i]
-                tokens = collect(setdiff(xtokens,ntokens))
-                cw     = String(map(UInt8,tokens))
-                for l in inds
-                    if l != n && l !=i
-                        w    = trnwords[l]
-                        diff = compare(cw,w,dist)
-                        if diff > 0.5
-                            push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                            cnt+=1
-                            cnt == 3 && break
-                        end
-                    end
-                end
-            end
-        end
-        push!(adjlists, processed)
-    end
-    return adjlists
-end
-
 function beam_decode(model::Recombine, x, protos, z; forviz=false)
     vocab = model.vocab
     T,B,H,V,E = eltype(arrtype), size(z,2), model.config["H"], length(vocab.tokens), model.config["E"]
@@ -273,8 +217,6 @@ function beam_search(model::Recombine, traces, protos, masks, projs, z; step=1, 
     end
     return new_traces
 end
-
-
 
 function decode(model::Recombine, x, protos, z; sampler=argmax, training=true, mixsampler=false, temp=0.2, cond=false)
     vocab = model.vocab
@@ -710,7 +652,6 @@ function train!(model::Recombine, data; eval=false, dev=nothing, returnlist=fals
         end
 #        total_iter > 400000 && break
     end
-
     # if !isnothing(dev) && !eval
     #     for (best, current) in zip(bestparams,parameters(model))
     #         copyto!(value(current),value(best))
@@ -865,66 +806,6 @@ function attension_visualize(vocab, probs, scores, protos, x; prefix="")
 end
 
 
-function pickprotos_conditional(model::Recombine{SCANDataSet}, esets; subtask=nothing)
-    dist  = Levenshtein()
-    trn        = map(d->xfield(SCANDataSet,d,true),esets[1])
-    tst        = map(d->xfield(SCANDataSet,d,true),esets[2])
-    trnwords   = map(d->d.input,esets[1])
-    trnstrs    = map(d->String(map(UInt8,d.input)),esets[1])
-    testwords  = map(d->d.output,esets[2])
-    teststrs   = map(d->String(map(UInt8,d.input)),esets[2])
-    processed  = []
-    for i=1:length(testwords)
-        current_word = testwords[i]
-        current_str  = teststrs[i]
-        xp_candidates = []
-        for j in 1:length(trnstrs)
-            trn_word = trnwords[j]
-            trn_str  = trnstrs[j]
-            sdiff = length(setdiff(current_word,trn_word))
-            ldiff = compare(current_str,trn_str,dist)
-            if ldiff > 0.5 && ldiff != 1.0 && sdiff > 0
-                push!(xp_candidates,(j,ldiff))
-            end
-        end
-        if isempty(xp_candidates)
-            push!(xp_candidates, rand(1:length(trnwords)))
-        else
-            xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
-        end
-        for n in xp_candidates
-            xpp_candidates = []
-            xp_tokens      = trnwords[n]
-            diff_tokens    = setdiff(current_word,xp_tokens)
-            diff_str       = String(map(UInt8,diff_tokens))
-            for l=1:length(trnwords)
-                if l != n
-                    ldiff = compare(diff_str,trnstrs[l],dist)
-                    #sdiff = length(symdiff(diff_tokens,trnwords[l]))
-                    lendiff = abs(length(trnwords[l])-length(diff_tokens))
-                    if ldiff > 0.5 && lendiff < 5
-                        push!(xpp_candidates,(l,ldiff))
-                        #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
-                        # cnt+=1
-                        #cnt == 3 && break
-                    end
-                end
-            end
-            if isempty(xpp_candidates)
-                current_xpp = xfield(SCANDataSet,rand(esets[1]),true)
-                push!(processed, (x=tst[i], xp=trn[n], xpp=rand(trn))) #push!(neighbours, rand(inds))
-            else
-                xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
-                for xpp in xpp_candidates
-                    current_xpp = xfield(SCANDataSet,trn[xpp],true)
-                    push!(processed, (x=tst[i], xp=trn[n], xpp=trn[xpp]))
-                end
-            end
-        end
-    end
-    processed
-end
-
 
 function pickprotos_conditional(model::Recombine{SIGDataSet}, processed, esets; subtask="reinflection")
     dist   = Levenshtein()
@@ -1054,34 +935,6 @@ function preprocess(m::Recombine{SIGDataSet}, train, devs...)
     return adjlists
 end
 
-
-
-function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=nothing)
-    p_std, p_mean = std_mean((length(p.xp) for p in first(processed)))
-    pthresh = p_mean
-    pp_std, pp_mean = std_mean((length(p.xpp) for p in first(processed)))
-    ppthresh = pp_mean
-    @show p_mean, pp_mean
-    eset    = length(esets) == 3  ? [esets[1];esets[end]] : esets[1]
-    set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
-    set     = unique(set)
-    inputs  = map(d->d.input, eset)
-    outputs = map(d->d.output, eset)
-    data    = []
-    inpdict, outdict =  Set(Int[]), Set(Int[])
-    for d in inputs; for t in d; push!(inpdict,t); end; end
-    for d in outputs; for t in d; push!(outdict,t); end; end
-    for i=1:length(set)
-        length(set[i]) > pthresh && continue
-         for j=1:length(set)
-            j==i && continue
-            length(set[j]) > ppthresh && continue
-            push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
-        end
-    end
-    data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing
-end
-
 function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="analyses")
     eset    = esets[1] #length(esets) == 3  ? [esets[1];esets[3]] : esets[1]
     vocab   = model.vocab.tokens
@@ -1110,13 +963,15 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
 
    @show tag_counts
 
-   rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 40 && isuppercase(vocab[t][1])]
-   rare = [vocab["PST"],vocab["FUT"]]
-   println(vocab[rare])
+
+   rare = [t for (t,cnt) in tag_counts if cnt > 1 && cnt <= 20 && isuppercase(vocab[t][1])]
+
+   println("rare tags: ",vocab[rare])
+   #println(vocab[rare])
 
    weird_items = [
        i for (i, tag) in enumerate(tags)
-       if length(intersect(Set(tag), Set(rare))) > 0
+       if length(intersect(Set(tag), Set(rare))) > 0 # if model.config["rare_token"]
    ]
 
    # println("weird")
@@ -1126,36 +981,52 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
    #     println(join(vocab[out]," "))
    # end
    if model.config["nproto"] == 2
-       data = []
-       trnitems = 1:length(set)
-       for j=1:length(esets[end])
-           allow_exact = j % 2 == 1
-           if length(weird_items) == 0
-               push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems]. ID=(I=Int[],D=Int[])))
-               continue
+       if get(model.config, "rare_token", false)
+           data = []
+           trnitems = 1:length(set)
+           for j=1:length(esets[end])
+               allow_exact = j % 2 == 1
+               if length(weird_items) == 0
+                   push!(data, (x=Int[specialIndicies.bow], xp=set[trnitems], xpp=set[trnitems]. ID=(I=Int[],D=Int[])))
+                   continue
+               end
+               # tag = rand(rare)
+               # println(vocab[tag])
+               # #println(vocab[tag])
+               # shuffle!(weird_items)
+               # i1 = rand([i for i in weird_items if tag in tags[i]])
+               i1 = rand(weird_items)
+               #println(join(vocab[set[i1]]," "))
+               item1, item1_out = set[i1], tags[i1]
+               sort_key = i-> (!(allow_exact && tags[i] == item1_out),
+                                 -length(intersect(Set(tags[i]),Set(item1_out))))
+
+               weird_available = sort([i for i in trnitems if i != i1], by=sort_key)
+               i2 = weird_available[1]
+               item2 = set[i2]
+               item2_out = tags[i2]
+
+               all_available = sort([i for i in trnitems if i != i1 && i != i2], by=sort_key)
+
+               i3 = all_available[1]
+               item3 = set[i3]
+               for (k1,k2) in  ((i1, i2), (i1, i3), (i2, i1), (i3, i1))
+                   push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2], ID=(I=Int[],D=Int[])))
+               end
            end
-           # tag = rand(rare)
-           # println(vocab[tag])
-           # #println(vocab[tag])
-           # shuffle!(weird_items)
-           # i1 = rand([i for i in weird_items if tag in tags[i]])
-           i1 = rand(weird_items)
-           #println(join(vocab[set[i1]]," "))
-           item1, item1_out = set[i1], tags[i1]
-           sort_key = i-> (!(allow_exact && tags[i] == item1_out),
-                             -length(intersect(Set(tags[i]),Set(item1_out))))
-
-           weird_available = sort([i for i in trnitems if i != i1], by=sort_key)
-           i2 = weird_available[1]
-           item2 = set[i2]
-           item2_out = tags[i2]
-
-           all_available = sort([i for i in trnitems if i != i1 && i != i2], by=sort_key)
-
-           i3 = all_available[1]
-           item3 = set[i3]
-           for (k1,k2) in  ((i1, i2), (i1, i3), (i2, i1), (i3, i1))
-               push!(data, (x=Int[specialIndicies.bow], xp=set[k1], xpp=set[k2], ID=(I=Int[],D=Int[])))
+       else
+           data = []
+           for i=1:length(set)
+                p_inp, p_out = inputs[i], outputs[i]
+                p_tags = tags[i]
+                for j=1:length(set)
+                   j==i && continue
+                   pp_inp, pp_out = inputs[j], outputs[j]
+                   pp_tags = tags[j]
+                   if 0 < length(symdiff(p_tags,pp_tags)) <= 2
+                       push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j], ID=(I=Int[],D=Int[])))
+                   end
+               end
            end
        end
    else
@@ -1165,27 +1036,10 @@ function pickprotos(model::Recombine{SIGDataSet}, processed, esets; subtask="ana
        end
    end
 
-    #
-    # for i=1:length(set)
-    #      p_inp, p_out = inputs[i], outputs[i]
-    #      p_lemmaptags = subtask == "reinflection" ? p_inp : p_out
-    #      p_lemma, p_ts = split_array(p_lemmaptags,specialIndicies.iosep) #p_inp[1:indexsep-1],p_inp[indexsep+1:end]
-    #      for j=1:length(set)
-    #         j==i && continue
-    #         pp_inp, pp_out = inputs[j], outputs[j]
-    #         pp_lemmaptags = subtask == "reinflection" ? pp_inp : pp_out
-    #         pp_lemma, pp_ts = split_array(pp_lemmaptags,specialIndicies.iosep)
-    #         if 0 < length(setdiff(p_ts,pp_ts)) < 3
-    #             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
-    #         end
-    #     end
-    # end
-    data, Set(inputs), Set(outputs), dicts[1], dicts[2], Set(tags), dicts[3]
+    data, Set(inputs), Set(outputs), dicts[1], dicts[2], Set(tags), dicts[3], rare
 end
 
-function io_to_line(vocab::Vocabulary{SCANDataSet}, input, output; subtask=nothing)
-    v = vocab.tokens; "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
-end
+
 
 
 function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinflection")
@@ -1200,14 +1054,12 @@ function io_to_line(vocab::Vocabulary{SIGDataSet}, input, output; subtask="reinf
     end
 end
 
-
-
 function print_samples(model, processed, esets; beam=true, fname="samples.txt", N=400, Nsample=N, K=300, mixsampler=false)
     vocab, task, subtask  = model.vocab, model.config["task"], get(model.config, "subtask", nothing)
     nonexisttag, iosep = true, specialIndicies.sep
     printed, aug_io, probs = String[], [], []
-    data, inputs, outputs, inpdict, outdict, tags, tagdict = pickprotos(model, processed, esets; subtask=subtask)
-    # @show length(data)
+    data, inputs, outputs, inpdict, outdict, tags, tagdict, rare = pickprotos(model, processed, esets; subtask=subtask)
+    #@show length(data)
     #data = [processed[2];processed[3]] # when you want to cheat!
     iter = Iterators.Stateful(Iterators.cycle(shuffle(data)))
     cnt = 0
@@ -1232,7 +1084,10 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
                     # lemma, tag = split_array(lemmaptags, specialIndicies.iosep)
                     #nonexisttag =  tag ∉ tags && all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
                     nonexisttag =  all(i->haskey(tagdict,i), tag) && length(tag) > 1 && (length(tag) == length(unique(tag)))
-                    nonexisttag = (vocab.tokens["PST"] ∈ tag || vocab.tokens["FUT"] ∈ tag) && nonexisttag
+                    if get(model.config,"rare_token",false)
+                        nonexisttag = any(r->r ∈ tag, rare) && nonexisttag
+                    end
+                    #end
                     #nonexisttag = true
                 end
                 line = io_to_line(vocab, input, output; subtask=subtask)
@@ -1259,7 +1114,7 @@ function print_samples(model, processed, esets; beam=true, fname="samples.txt", 
         for i in r; println(f,printed[i]); end
     end
     if subtask == "reinflection" # FIXME: assuming that the conditional task is always "analyses"
-         aug_io = map(d->(input=d.output, output=d.input),aug_io)
+        aug_io = map(d->(input=d.output, output=d.input),aug_io)
     end
     return printed[r], aug_io[r]
 end
@@ -1342,7 +1197,6 @@ function print_ex_samples(model::Recombine, data; beam=true, mixsampler=false, N
     #end
 end
 
-
 function kl_calc(m)
     """evaluate KL penalty terms for a given model configuration."""
     kl_edit_vec = vmfKL(m)
@@ -1350,3 +1204,154 @@ function kl_calc(m)
     kl_term     = (1.0-m.config["kill_edit"])*(kl_edit_vec + norm_term)
     return kl_term
 end
+
+
+# function io_to_line(vocab::Vocabulary{SCANDataSet}, input, output; subtask=nothing)
+#     v = vocab.tokens; "IN: "*join(v[input],' ')*" OUT: "*join(v[output],' ')
+# end
+
+# function pickprotos(model::Recombine{SCANDataSet}, processed, esets; subtask=nothing)
+#     p_std, p_mean = std_mean((length(p.xp) for p in first(processed)))
+#     pthresh = p_mean
+#     pp_std, pp_mean = std_mean((length(p.xpp) for p in first(processed)))
+#     ppthresh = pp_mean
+#     @show p_mean, pp_mean
+#     eset    = length(esets) == 3  ? [esets[1];esets[end]] : esets[1]
+#     set     = map(d->xfield(model.config["task"],d,model.config["conditional"]),eset)
+#     set     = unique(set)
+#     inputs  = map(d->d.input, eset)
+#     outputs = map(d->d.output, eset)
+#     data    = []
+#     inpdict, outdict =  Set(Int[]), Set(Int[])
+#     for d in inputs; for t in d; push!(inpdict,t); end; end
+#     for d in outputs; for t in d; push!(outdict,t); end; end
+#     for i=1:length(set)
+#         length(set[i]) > pthresh && continue
+#          for j=1:length(set)
+#             j==i && continue
+#             length(set[j]) > ppthresh && continue
+#             push!(data, (x=Int[specialIndicies.bow], xp=set[i], xpp=set[j]))
+#         end
+#     end
+#     data, Set(inputs), Set(outputs), inpdict, outdict, nothing, nothing
+# end
+
+#
+#
+# function pickprotos_conditional(model::Recombine{SCANDataSet}, esets; subtask=nothing)
+#     dist  = Levenshtein()
+#     trn        = map(d->xfield(SCANDataSet,d,true),esets[1])
+#     tst        = map(d->xfield(SCANDataSet,d,true),esets[2])
+#     trnwords   = map(d->d.input,esets[1])
+#     trnstrs    = map(d->String(map(UInt8,d.input)),esets[1])
+#     testwords  = map(d->d.output,esets[2])
+#     teststrs   = map(d->String(map(UInt8,d.input)),esets[2])
+#     processed  = []
+#     for i=1:length(testwords)
+#         current_word = testwords[i]
+#         current_str  = teststrs[i]
+#         xp_candidates = []
+#         for j in 1:length(trnstrs)
+#             trn_word = trnwords[j]
+#             trn_str  = trnstrs[j]
+#             sdiff = length(setdiff(current_word,trn_word))
+#             ldiff = compare(current_str,trn_str,dist)
+#             if ldiff > 0.5 && ldiff != 1.0 && sdiff > 0
+#                 push!(xp_candidates,(j,ldiff))
+#             end
+#         end
+#         if isempty(xp_candidates)
+#             push!(xp_candidates, rand(1:length(trnwords)))
+#         else
+#             xp_candidates = first.(sort(xp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
+#         end
+#         for n in xp_candidates
+#             xpp_candidates = []
+#             xp_tokens      = trnwords[n]
+#             diff_tokens    = setdiff(current_word,xp_tokens)
+#             diff_str       = String(map(UInt8,diff_tokens))
+#             for l=1:length(trnwords)
+#                 if l != n
+#                     ldiff = compare(diff_str,trnstrs[l],dist)
+#                     #sdiff = length(symdiff(diff_tokens,trnwords[l]))
+#                     lendiff = abs(length(trnwords[l])-length(diff_tokens))
+#                     if ldiff > 0.5 && lendiff < 5
+#                         push!(xpp_candidates,(l,ldiff))
+#                         #push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+#                         # cnt+=1
+#                         #cnt == 3 && break
+#                     end
+#                 end
+#             end
+#             if isempty(xpp_candidates)
+#                 current_xpp = xfield(SCANDataSet,rand(esets[1]),true)
+#                 push!(processed, (x=tst[i], xp=trn[n], xpp=rand(trn))) #push!(neighbours, rand(inds))
+#             else
+#                 xpp_candidates = first.(sort(xpp_candidates, by=x->x[2], rev=true)[1:min(end,5)])
+#                 for xpp in xpp_candidates
+#                     current_xpp = xfield(SCANDataSet,trn[xpp],true)
+#                     push!(processed, (x=tst[i], xp=trn[n], xpp=trn[xpp]))
+#                 end
+#             end
+#         end
+#     end
+#     processed
+# end
+
+
+#
+# function preprocess(m::Recombine{T}, train, devs...) where T<:DataSet
+#     dist = Levenshtein()
+#     thresh, cond, maxcnt =  m.config["dist_thresh"], m.config["conditional"], m.config["max_cnt_nb"]
+#     sets = map((train,devs...)) do set
+#             map(d->xfield(T,d,cond),set)
+#     end
+#     sets = map(unique,sets)
+#     words = map(sets) do set
+#         map(d->String(map(UInt8,d)),set)
+#     end
+#     trnwords = first(words)
+#     adjlists  = []
+#     for (k,set) in enumerate(words)
+#         adj = Dict((i,[]) for i=1:length(set))
+#         processed = []
+#         for i in progress(1:length(set))
+#             cw            = set[i]
+#             neighbours    = []
+#             cnt   = 0
+#             inds  = randperm(length(trnwords))
+#             for j in inds
+#                 w    = trnwords[j]
+#                 diff = compare(cw,w,dist)
+#                 if diff > thresh && diff != 1
+#                     push!(neighbours,j)
+#                     cnt+=1
+#                     cnt == maxcnt && break
+#                 end
+#             end
+#             if isempty(neighbours)
+#                 push!(neighbours, rand(inds))
+#             end
+#             for n in neighbours
+#                 x′′ = []
+#                 ntokens = sets[1][n]
+#                 xtokens = sets[k][i]
+#                 tokens = collect(setdiff(xtokens,ntokens))
+#                 cw     = String(map(UInt8,tokens))
+#                 for l in inds
+#                     if l != n && l !=i
+#                         w    = trnwords[l]
+#                         diff = compare(cw,w,dist)
+#                         if diff > 0.5
+#                             push!(processed, (x=xtokens, xp=ntokens, xpp=sets[1][l]))
+#                             cnt+=1
+#                             cnt == 3 && break
+#                         end
+#                     end
+#                 end
+#             end
+#         end
+#         push!(adjlists, processed)
+#     end
+#     return adjlists
+# end

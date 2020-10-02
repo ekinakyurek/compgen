@@ -1,6 +1,8 @@
 #!/bin/bash
+
+CHECKPOINTFOLDER=$1
 std(){
-    awk '{sum+=$1; sumsq+=$1*$1}END{print "\\pm " sqrt(sumsq/NR - (sum/NR)**2)}'
+    awk '{sum+=$1; sumsq+=$1*$1}END{print "± " sqrt(sumsq/NR - (sum/NR)**2)}'
 }
 
 mean(){
@@ -19,21 +21,21 @@ stdmean(){
     echo
 }
 
-stdmean(){
-    echo -n "TEST:"
-    mu=$(printf "$1" |  sed -n 'p;n' | tr  '\n' ',')
-    echo -n  "[$mu]"
-    echo -n "\tVAL: "
-    mu=$(printf "$1" |  sed -n 'n;p'  | tr '\n' ',')
-    echo -n "[$mu]"
-    echo
-}
+# stdmean(){
+#     echo -n "TEST:"
+#     mu=$(printf "$1" |  sed -n 'p;n' | tr  '\n' ',')
+#     echo -n  "[$mu]"
+#     echo -n "\tVAL: "
+#     mu=$(printf "$1" |  sed -n 'n;p'  | tr '\n' ',')
+#     echo -n "[$mu]"
+#     echo
+# }
 
 
 
 rootfolder=$(pwd)
 for lang in spanish turkish swahili;do
-    cd ${rootfolder}/checkpoints/SIGDataSet/${lang}/
+    cd ${rootfolder}/${CHECKPOINTFOLDER}/SIGDataSet/${lang}/
     nproto=2
     model=baseline
     vae=true
@@ -95,7 +97,7 @@ for lang in spanish turkish swahili;do
 done
 	    
 echo "====SCAN Results===="
-cd ${rootfolder}/checkpoints/SCANDataSet/
+cd ${rootfolder}/${CHECKPOINTFOLDER}/SCANDataSet/
 for split in jump around_right; do
     for nproto in 0 1 2;do
 	for vae in false true;do
