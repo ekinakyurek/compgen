@@ -12,8 +12,8 @@ takejob () {
     export RECOMB_TASK=SCAN
     export RECOMB_CHECKPOINT_DIR=checkpoints/
     export RECOMB_DATA_DIR=data/
-    if [ ! -d ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs ]; then
-                mkdir -p ${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs
+    if [ ! -d ../${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs ]; then
+                mkdir -p ../${RECOMB_CHECKPOINT_DIR}/SCANDataSet/logs
     fi
     echo "$1"
     salloc --gres=gpu:volta:1 --time=48:00:00 --constraint=xeon-g6 --cpus-per-task=5 --qos=high  srun $1

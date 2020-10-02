@@ -15,9 +15,9 @@ takejob () {
     export RECOMB_CHECKPOINT_DIR=checkpoints/
     export RECOMB_DATA_DIR=data/
     export RECOMB_SIG_SUBDIR=SIGDataSet/
-    if [ ! -d ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/turkish/logs ]; then
+    if [ ! -d ../${RECOMB_CHECKPOINT_DIR}/SIGDataSet/turkish/logs ]; then
         for lang in turkish spanish swahili; do
-            mkdir -p ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${lang}/logs
+            mkdir -p ../${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${lang}/logs
         done
     fi
     echo "$1"
