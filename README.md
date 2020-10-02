@@ -1,7 +1,5 @@
 # Learning to Recombine Data for Compositional Generalization
 
-This repository is the official implementation of Learning to Recombine Data for Compositional Generalization. It is for reviewing purposes only, please do not distribute.
-
 ![Recombination Model](./recomb.png "Recomb Network")
 
 ## Dependencies
@@ -84,4 +82,4 @@ If you get warnings about the GPU such examples in below, you should refer to re
 Warning: Knet cannot use the GPU: ErrorException("curandCreateGenerator: 203: Initialization of CUDA failed"
 [ Info: CUDAdrv.jl failed to initialize, GPU functionality unavailable (set JULIA_CUDA_SILENT or JULIA_CUDA_VERBOSE to silence or expand this message)
 ```
-If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, it means you need more GPU memory.
+If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, you need more GPU memory.
