@@ -29,8 +29,6 @@ Note that since this codebase is for reproducibility purposes you might require 
 
 To install requirements:
 ```SHELL
-   git clone https://github.com/ekinakyurek/compgen
-   cd compgen
    sh setup.sh
 ```
 `setup.sh` performs the following steps interactively:
@@ -40,8 +38,8 @@ To install requirements:
 4. Downloads `SCAN` and `SIGMORPHON 2018` preprocessed neighborhood files from server.
 
   **Optional**:
-  
-5. Downloads pre-trained generative models for `SCAN` and `SIGMORPHON 2018` along with generated samples to the [checkpoints/](checkpoints/) folder.
+
+5. Downloads pre-trained generative models for `SCAN` and `SIGMORPHON 2018` along with generated samples to the the checkpoints folders.
 
 Note that if there are issues with any of the steps 1 through 4, the experiments might fail.
 
@@ -52,23 +50,23 @@ To verify the results presented in the paper, you may run the scripts to train m
 
 All experiment scripts are found at [exps/](exps/)
 
-For example, to run the 2-proto model with VAE on the `jump` split of `SCAN`, use
+For example, to run the recomb-2 model with VAE on the `jump` split of `SCAN`, use
 
 ```SHELL
 cd exps
+export RECOMB_CHECKPOINT_DIR=checkpoints/
 ./jump_vae_2proto.sh
 ```
-
-which runs the entire pipeline (train generative model -> generate samples -> train conditional model with augmented data). The logs and saved models can be found under [checkpoints/](checkpoints/) folder.
+which runs the entire pipeline (train generative model -> generate samples -> train conditional model with augmented data). The logs and saved models can be found under `RECOMB_CHECKPOINT_DIR` folder.
 
 > 📋 Note that the experiments are tested on NVIDIA 32GB V100 Volta GPUs. For some models GPU requirements might be high. Assuming the same setup, each experiment should run less than one hour.
 
 ## Evaluation
 
-After running an experiment, evaluation results can be found under [checkpoints/](checkpoints/) at the end of the files named `*condconfig`. After running multiple experiments, we provide a convenience script which collates the results:
+After running an experiment, evaluation results can be found under [checkpoints/](checkpoints/) at the end of the files named `*condconfig`. After running multiple experiments, we provide a convenience script which collates the results in shell:
 
 ```SHELL
-sh collect.sh
+sh collect.sh path/to/checkpoints
 ```
 
 Moreover, after running all experiments, one can refer to `analyze_results.ipynb` Jupyter Notebook to obtain the figures and tables provided in the paper.
@@ -77,31 +75,6 @@ Moreover, after running all experiments, one can refer to `analyze_results.ipynb
 ## Pre-trained Models
 
 `setup.sh` optionally downloads the pre-trained models. See **Requirements** section.
-
-## Results
-
-### Table 1
-
-
-| Model    |   ('Acc', 'AROUND RIGHT') |   ('Acc', 'JUMP') |
-|:---------|--------------------------:|------------------:|
-| baseline |                      0    |              0    |
-| geca     |                      0.82 |              0.87 |
-| 0proto   |                      0    |              0    |
-| 1proto   |                      0.16 |              0    |
-| 2proto   |                      0.51 |              0.88 |
-
-
-
-### Table 2
-
-| Model    |   ('Future Tense', 'Acc') |   ('Future Tense', 'F1') |   ('Past Tense', 'Acc') |   ('Past Tense', 'F1') |   ('Present Tense', 'Acc') |   ('Present Tense', 'F1') |
-|:---------|--------------------------:|-------------------------:|------------------------:|-----------------------:|---------------------------:|--------------------------:|
-| baseline |                      0.13 |                     0.7  |                    0.03 |                   0.55 |                       0.6  |                      0.88 |
-| geca     |                      0.24 |                     0.76 |                    0.07 |                   0.6  |                       0.58 |                      0.87 |
-| 0proto   |                      0.36 |                     0.79 |                    0.06 |                   0.61 |                       0.56 |                      0.85 |
-| 1proto   |                      0.31 |                     0.8  |                    0.05 |                   0.59 |                       0.57 |                      0.87 |
-| 2proto   |                      0.19 |                     0.77 |                    0.03 |                   0.59 |                       0.59 |                      0.87 |
 
 
 ## Trouble Shooting
@@ -112,4 +85,3 @@ Warning: Knet cannot use the GPU: ErrorException("curandCreateGenerator: 203: In
 [ Info: CUDAdrv.jl failed to initialize, GPU functionality unavailable (set JULIA_CUDA_SILENT or JULIA_CUDA_VERBOSE to silence or expand this message)
 ```
 If you get `ERROR: LoadError: cudnnRNNBackwardData: 8: CUDNN_STATUS_EXECUTION_FAILED`, it means you need more GPU memory.
-

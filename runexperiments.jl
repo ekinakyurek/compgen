@@ -29,7 +29,7 @@ function run(args=ARGS)
         ("--subtask"; arg_type=String; default="reinflection"; help="subtask for generative model, analyses or reinflection")
         ("--copy"; action=:store_true; help="copy meachanism in rnn")
         ("--outdrop_test"; action=:store_true; help="dropout on output at test time")
-        ("--seperate"; action=:store_true; help="seperate encodings for 2 prototype")
+        ("--seperate"; action=:store_false; help="seperate encodings for 2 prototype")
         ("--seperate_emb"; action=:store_true; help="seperate embeddings for input-output")
         ("--kill_edit"; action=:store_true; help="no vae")
         ("--paug"; arg_type=Float64; default=.0; help="augmentation ratio for condtional model, 0 for direct concatenation")
@@ -38,7 +38,9 @@ function run(args=ARGS)
         ("--generate"; action=:store_true; help="train generative model")
         ("--N"; arg_type=Int; default=180; help="number of rnn layers")
         ("--Nsamples"; arg_type=Int; default=180; help="number of rnn layers")
+        ("--rare_token"; action=:store_true; help="filter rare tokens")
         ("--loadprefix"; help="sample file prefix")
+        ("--modeldir"; help="model dir")
     end
 
     isa(args, AbstractString) && (args=split(args))
@@ -68,7 +70,7 @@ function run(args=ARGS)
             print(k,"\t")
         end
     end
-
+    printConfig(config)
     main(config,condconfig; generate=options["generate"] && !options["baseline"],
                             baseline=options["baseline"],
                             usegenerated=options["usegenerated"],

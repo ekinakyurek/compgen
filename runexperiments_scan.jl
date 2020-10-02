@@ -34,9 +34,11 @@ function run(args=ARGS)
         ("--N"; arg_type=Int; default=400; help="number of rnn layers")
         ("--Nsamples"; arg_type=Int; default=500; help="number of rnn layers")
         ("--loadprefix"; help="sample file prefix")
+        ("--modeldir"; help="model dir")
         ("--nproto"; arg_type=Int; default=2; help="number of prototypes, 0,1,2")
         ("--use_insert_delete"; action=:store_true; help="use insert and delete embeddings to calculate z")
         ("--kill_edit"; action=:store_true; help="dont use vae, z becomes zeros vector.")
+        ("--rare_token"; action=:store_true; help="filter rare tokens")
         ("--temp"; arg_type=Float64; default=0.4; help="temperature sampler for mixsampler")
     end
 

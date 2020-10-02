@@ -6,8 +6,8 @@ if get(ENV,"RECOMB_TASK","SCAN") == "SCAN"
 else # MORPH
     include("src/recombine_sig.jl")
 end
-include("src/seqseqatt.jl")
 
+include("src/seqseqatt.jl")
 
 function limitdev!(sets, limit=2000)
     if length(sets) > 2
@@ -21,13 +21,17 @@ function get_data_model(config)
     task  = config["task"]
     MT    = config["model"]
     if haskey(config,"path") && task == SIGDataSet
-        return read_from_jsons(config["path"]*"/", config)
+        return read_from_jsons(defaultpath(config["task"])*"/", config)
     end
-    proc  = "data/" * string(task) * "/" *config["splitmodifier"] * ".jld2"
+    proc  = defaultpath(config["task"]) * "/" *config["splitmodifier"] * ".jld2"
     println("processed file: ",proc," exist: ", isfile(proc))
     if isfile(proc)
         processed, esets, vocab, embeddings = load_preprocessed_data(proc)
-        model  = MT(vocab, config; embeddings=embeddings)
+        if get(config,"modeldir",nothing) == nothing
+            model  = MT(vocab, config; embeddings=embeddings)
+        else
+            model  = KnetLayers.load(config["modeldir"],"model")
+        end
     else
         files = rawfiles(task, config)
         parser = Parser{task}()
@@ -94,7 +98,7 @@ function getsaveprefix(config)
     seedstr  = string(".seed.",config["seed"])
     # splitstr = string(".split.",config["split"])
     # hashstr  = string("_hash_",hash(config))
-    string("checkpoints/",task,"/",langstr,modelstr,splitstr,hintsstr,seedstr,".")
+    string(CHECKPOINT_DIR,"/",task,"/",langstr,modelstr,splitstr,hintsstr,seedstr,".")
 end
 
 function train_generative_model(config)
@@ -116,7 +120,10 @@ function train_generative_model(config)
             trnlen  = length(first(pickprotos(model, processed, esets)))
         end
     end
-    train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
+    println("mymodeldir: ", get(config,"modeldir","nothing"))
+    if get(config,"modeldir",nothing) == nothing
+        train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
+    end
     print_ex_samples(model,processed[2]; beam=true) # to diagnosis
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
@@ -146,9 +153,9 @@ function sample_from_generative_model(saveprefix, trndata=nothing; model=nothing
     task   = config["task"]
     if isnothing(trndata)
         if task == SIGDataSet && haskey(config,"path")
-            trndata = read_from_jsons(config["path"]*"/", config)
+            trndata = read_from_jsons(defaultpath(config["task"])*"/", config)
         else
-            proc  = "data/" * string(task) * "/" *config["splitmodifier"] * ".jld2"
+            proc  = defaultpath(config["task"]) * "/" *config["splitmodifier"] * ".jld2"
             trndata = load_preprocessed_data(proc)
         end
     end
@@ -173,6 +180,9 @@ function evaluate_cond_model(config, saveprefix, trndata, augmentedstr=nothing)
     _, esets, vocab = trndata
     processed, model, augmented = get_data_cond_model(config, vocab, esets, augmentedstr)
     if !isnothing(augmented)
+        for (x,y) in augmented
+            println("inp: ", vocab.tokens[x], "\t out: ", vocab.tokens[y])
+        end
         paug = config["paug"]
         if paug != 0
             iter = MultiIter(shuffle(augmented),shuffle(processed[1]),paug)
@@ -227,12 +237,15 @@ function main(config, condconfig=nothing; generate=true, baseline=true, usegener
             evaluate_cond_model(condconfig, saveprefix, trndata, augmentedstr)
         end
     else
-        processed, esets, m = get_data_model(config)
-        trndata = (processed, esets, m.vocab)
-        m=nothing
         if isnothing(saveprefix)
+            processed, esets, m, generated = get_data_model(config)
+            trndata = (processed, esets, m.vocab)
+            m=nothing
             saveprefix = getsaveprefix(config)
         else
+            processed, esets, m = get_data_model(config)
+            trndata = (processed, esets, m.vocab)
+            m=nothing
             task   = config["task"]
             parser = Parser{task}()
             augmented_data  = parseDataFile(saveprefix*"samples.txt",parser)

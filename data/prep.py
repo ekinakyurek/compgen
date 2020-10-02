@@ -20,7 +20,7 @@ TRAIN_COUNT = {"low": 100, "medium": 1000, "high": 10000}[TRAIN_SIZE]
 TEST_COUNT = 100
 
 OTHER_LANGS = []
-NEIGHBORS = 2
+NEIGHBORS = 4
 
 VAL_TAG = "PST"
 TEST_TAG = "FUT"
@@ -119,7 +119,7 @@ def build_stratified(hints):
         print("tv", " ".join(vocab.decode(seq)))
     val_like_val_seqs = val_like_seqs[hints:]
     test_like_seqs = [ss for s in test_like_seqs for ss in s]
-    train_like_seqs = permutation(test_rand, train_like_seqs)
+    test_like_seqs = permutation(test_rand, test_like_seqs)
     test_like_train_seqs = test_like_seqs[:hints]
     test_like_test_seqs = test_like_seqs[hints:]
 

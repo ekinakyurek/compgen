@@ -2,7 +2,7 @@
 cd ../
 # export CUDA_VISIBLE_DEVICES=3
 export RECOMB_TASK=MORPH
-LANG=spanish
+LANG=turkish
 for hints in 4 8 16; do
 	for seed in 0 1 2 3 4; do
 		julia --project runexperiments.jl --seed $seed \
@@ -15,6 +15,7 @@ for hints in 4 8 16; do
 		--seperate_emb \
 		--lang ${LANG} \
 		--baseline \
+		--usegenerated \
 		> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.log  \
 		2> ${RECOMB_CHECKPOINT_DIR}/SIGDataSet/${LANG}/logs/baseline.hints.${hints}.seed.$seed.cond.err
 	done

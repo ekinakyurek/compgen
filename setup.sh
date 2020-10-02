@@ -37,6 +37,22 @@ echo "Clonning raw dataset files from the original sources..."
 #FIXME: Check if raw files exists
 julia --project -L src/parser.jl -e 'download(SIGDataSet); download(SCANDataSet)'
 
+echo -n "Do you want to download checkpoints(2MB)? \
+ 					Strongly recommended for replication and to see the experimental results.
+					Type yes or no: "
+read answer
+if [ "$answer" = "yes" ]; then
+    if [ -d checkpoints.bak/ ]; then
+				echo "checkpoints exists, skipping the download..."
+    else
+				echo "Downloading checkpoint logs 2MB"
+				curl --url https://recomb.s3.us-east-2.amazonaws.com/checkpoints.tar.gz --output ./checkpoints.tar.gz
+				tar -xfz checkpoints.tar.gz
+    fi
+else
+    echo "skipping checkpoints"
+fi
+
 mkdir -p checkpoints/SCANDataSet/logs
 if [ -f data/SCANDataSet/jump.jld2 ] && [ -f data/SCANDataSet/around_right.jld2 ]; then
     echo "SCAN preprocessed data files exists, skipping the download..."

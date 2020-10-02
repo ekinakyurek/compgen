@@ -10,6 +10,9 @@ abstract type SIGDataSet <: DataSet; end
 abstract type SCANDataSet <: DataSet; end
 abstract type YelpDataSet <: DataSet; end
 
+const CHECKPOINT_DIR = get(ENV,"RECOMB_CHECKPOINT_DIR","./checkpoints/")
+const DATA_DIR = get(ENV,"RECOMB_DATA_DIR","./data/")
+
 struct Parser{MyDataSet}
     regex::Union{Regex,Nothing}
     partsSeperator::Union{Char,Nothing}
@@ -23,9 +26,9 @@ Parser{SCANDataSet}(version=:default) = Parser{SCANDataSet}(r"^IN\:\s(.*?)\sOUT\
 Parser{YelpDataSet}(version=:default) = Parser{YelpDataSet}(nothing,'\t',nothing,
                                                             Set(readlines(defaultpath(YelpDataSet)*"/free.txt")))
 
-defaultpath(dataset::Type{SIGDataSet}) = dir("data","SIGDataSet")
-defaultpath(dataset::Type{SCANDataSet}) = dir("data","SCANDataSet")
-defaultpath(dataset::Type{YelpDataSet}) = dir("data","Yelp")
+defaultpath(dataset::Type{SIGDataSet})  = dir(DATA_DIR,get(ENV,"RECOMB_SIG_SUBDIR","SIGDataSet"))
+defaultpath(dataset::Type{SCANDataSet}) = dir(DATA_DIR,get(ENV,"RECOMB_SCAN_SUBDIR","SCANDataSet"))
+defaultpath(dataset::Type{YelpDataSet}) = dir(DATA_DIR,get(ENV,"RECOMB_YELP_SUBDIR","Yelp"))
 
 function download(dataset::Type{SIGDataSet}; path=defaultpath(SIGDataSet))
     @show path
@@ -48,22 +51,22 @@ function download(dataset::Type{SCANDataSet}; path=defaultpath(SCANDataSet))
 end
 
 function download(dataset::Type{YelpDataSet}; path=defaultpath(YelpDataSet))
-    if !isdir(data/Glove)
-        download("http://nlp.stanford.edu/data/glove.6B.zip","data/glove.6B.zip")
-        run(`unzip -qq data/glove.6B.zip -d data/Glove/`)
-        rm("data/glove.6B.zip")
+    if !isdir("$DATA_DIR/Glove")
+        download("http://nlp.stanford.edu/data/glove.6B.zip","$DATA_DIR/glove.6B.zip")
+        run(`unzip -qq $DATA_DIR/glove.6B.zip -d $DATA_DIR/Glove/`)
+        rm("$DATA_DIR/glove.6B.zip")
     else
-        @warn "There is already data/Glove folder, skipping..."
+        @warn "There is already $DATA_DIR/Glove folder, skipping..."
     end
-    if !isdir("data/Yelp")
-        mkdir("data/Yelp")
+    if !isdir("$(defaultpath(YelpDataSet))")
+        mkdir("$(defaultpath(YelpDataSet))")
         server = "https://worksheets.codalab.org/rest/bundles/0x984fe19b60f1479b925933eacbfda8d8/contents/blob/"
         for file in ["train","test","valid"] .*  ".tsv"
             Base.download(joinpath(server,file), joinpath(path,file))
         end
         Base.download(joinpath(server,"free.txt"),  joinpath(path,"free.txt"))
     else
-        @warn "There is already data/Yelp folder, skipping..."
+        @warn "There is already $(defaultpath(YelpDataSet)) folder, skipping..."
     end
     return true
 end
@@ -78,17 +81,17 @@ prefix(dataset::Type{YelpDataSet}, opt) =
     joinpath(defaultpath(YelpDataSet), string(opt["model"], "_", opt["task"]))
 
 function rawfiles(dataset::Type{YelpDataSet}, config)
-    ["data/Yelp/train.tsv",
-     "data/Yelp/test2.tsv",
-     "data/Yelp/valid.tsv"]
+    ["$(defaultpath(YelpDataSet))/train.tsv",
+     "$(defaultpath(YelpDataSet))/test2.tsv",
+     "$(defaultpath(YelpDataSet))/valid.tsv"]
 end
 
 function rawfiles(dataset::Type{SIGDataSet}, config)
     lang = config["lang"]
     th   = lang[1:3]
     split = config["split"]
-    ["data/SIGDataSet/task1/all/$(lang)-train-$(split)",
-     "data/SIGDataSet/task1/all/$(lang)-test"
+    ["$(defaultpath(SIGDataSet))/task1/all/$(lang)-train-$(split)",
+     "$(defaultpath(SIGDataSet))/task1/all/$(lang)-test"
     ]
 end
 
@@ -96,11 +99,11 @@ function rawfiles(dataset::Type{SCANDataSet}, config)
     split, modifier  = config["split"], config["splitmodifier"]
     stsplit = replace(split, "_"=>"")
     if split in ("length","simple")
-        ["data/SCANDataSet/$(split)_split/tasks_train_$(stsplit).txt",
-         "data/SCANDataSet/$(split)_split/tasks_test_$(stsplit).txt"]
+        ["$(defaultpath(SCANDataSet))/$(split)_split/tasks_train_$(stsplit).txt",
+         "$(defaultpath(SCANDataSet))/$(split)_split/tasks_test_$(stsplit).txt"]
     else
-        ["data/SCANDataSet/$(split)_split/tasks_train_$(stsplit)_$(modifier).txt",
-         "data/SCANDataSet/$(split)_split/tasks_test_$(stsplit)_$(modifier).txt"]
+        ["$(defaultpath(SCANDataSet))/$(split)_split/tasks_train_$(stsplit)_$(modifier).txt",
+         "$(defaultpath(SCANDataSet))/$(split)_split/tasks_test_$(stsplit)_$(modifier).txt"]
     end
 end
 
@@ -330,22 +333,24 @@ function read_from_jsons(path, config; level="hard")
             (surface=special_lowercase(d[2],lcase), lemma=lemma, tags=tags)
     end
     if isfile(path*"generated.$fix.json")
-        augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
+        #augmented_data = map(d->convert(Vector{Int},d) .+ 1, JSON.parsefile(path*"generated.$fix.json"))
+        augmented_data = JSON.parsefile(path*"generated.$fix.json")
         aug = map(augmented_data) do  d
-            x = vocab[d[3:end-1]]
-            if length(findall(t->t=="<sep>", x)) == 1
-                input, output = split_array(x,"<sep>")
-                input, output  = special_lowercase(input,lcase), special_lowercase(output,lcase)
-                if any(map(isuppercaseornumeric, x))
-                    lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
-                    (surface=output, lemma=lemma, tags=tags)
-                    (input=output, output=input)
-                else
-                    nothing
-                end
-            else
-                nothing
-            end
+            output, input = map(String,d["inp"][2:end-1]), map(String,d["out"])
+            (input=input,output=output)
+        #     if length(findall(t->t=="<sep>", x)) == 1
+        #         input, output = split_array(x,"<sep>")
+        #         input, output  = special_lowercase(input,lcase), special_lowercase(output,lcase)
+        #         if any(map(isuppercaseornumeric, x))
+        #             lemma, tags   = split_array(input, isuppercaseornumeric; include=true)
+        #             (surface=output, lemma=lemma, tags=tags)
+        #             (input=output, output=input)
+        #         else
+        #             nothing
+        #         end
+        #     else
+        #         nothing
+        #     end
         end
         aug  = filter!(!isnothing, aug)
     else
@@ -358,10 +363,38 @@ function read_from_jsons(path, config; level="hard")
     esets  = [edata[s] for s in splits]
     #eaug   = encode(aug,vocab)
     processed = preprocess_json_format(neighbourhoods, splits, esets, edata; subtask=config["subtask"])
-    model     = config["model"](vocab, config; embeddings=nothing)
+    if get(config,"modeldir",nothing) == nothing
+        model     = config["model"](vocab, config; embeddings=nothing)
+    else
+        model     = KnetLayers.load(config["modeldir"],"model")
+        model.config["modeldir"] = config["modeldir"]
+    end
+    #model = (vocab=vocab,)
     #processed  = preprocess(model, esets...)
     #save(fname, "data", processed, "esets", esets, "vocab", vocab, "embeddings", nothing)
     return processed, esets, model, aug
+end
+
+function print_train_data(config)
+    datapath = defaultpath(config["task"])*"/"
+    println("reading from $(datapath)")
+    processed, esets, model, aug = read_from_jsons(datapath, config)
+    vocab = model.vocab
+    lang, seed, hints = config["lang"], config["seed"], config["hints"]
+    println("lang $lang hints $hints seed $seed")
+    for (i,split) in enumerate(("train","test_hard","test_easy","val_easy","val_hard"))
+        data = esets[i]
+        outpath = defaultpath(config["task"])* "/" * lang * "/$(split).hints-$(hints).$(seed).txt"
+        println("writing to $outpath")
+        f = open(outpath,"w")
+        for d in data
+            lemma   = join(vocab.tokens[d.lemma],"")
+            surface = join(vocab.tokens[d.surface],"")
+            tags    = join(vocab.tokens[d.tags],";")
+            println(f,lemma,"\t",surface,"\t",tags)
+        end
+        close(f)
+    end
 end
 
 function create_ppl_examples(eset, numex=200)
