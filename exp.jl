@@ -120,10 +120,11 @@ function train_generative_model(config)
             trnlen  = length(first(pickprotos(model, processed, esets)))
         end
     end
-    println("mymodeldir: ", get(config,"modeldir","nothing"))
     if get(config,"modeldir",nothing) == nothing
         train!(model, processed[1]; dev=processed[end], trnlen=trnlen)
-    end
+    else
+	println("mymodeldir: ", config["modeldir"])	
+    end 
     print_ex_samples(model,processed[2]; beam=true) # to diagnosis
     println("Calculating test evaluations")
     au       = calc_au(model, processed[2])
