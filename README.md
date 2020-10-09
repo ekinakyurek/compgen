@@ -1,6 +1,6 @@
-# Learning to Recombine Data for Compositional Generalization
+# Learning to Recombine and Resample Data for Compositional Generalization
 
-[Learning To Recombine and Resample Data For Compositional Generalization](https://arxiv.org/pdf/2010.03706.pdf)    
+Paper: [Learning To Recombine and Resample Data For Compositional Generalization](https://arxiv.org/pdf/2010.03706.pdf)    
 Ekin Akyürek, Afra Feyza Akyürek, Jacob Andreas (2020)
 
 ![Recombination Model](./recomb.png "Recomb Network")
